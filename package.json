@@ -1,0 +1,83 @@
+{
+  "name": "terminal-logger",
+  "displayName": "Terminal Logger",
+  "description": "自动记录终端输出到日志文件，支持时间戳和多终端分别记录",
+  "version": "1.0.0",
+  "publisher": "jeromesun",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "icon": "icon.png",
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "terminalLogger.toggle",
+        "title": "Terminal Logger: 开启/关闭日志记录"
+      },
+      {
+        "command": "terminalLogger.openLogFolder",
+        "title": "Terminal Logger: 打开日志文件夹"
+      },
+      {
+        "command": "terminalLogger.clearCurrentLog",
+        "title": "Terminal Logger: 清空当前日志"
+      }
+    ],
+    "configuration": {
+      "title": "Terminal Logger",
+      "properties": {
+        "terminalLogger.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否启用终端日志记录"
+        },
+        "terminalLogger.logPath": {
+          "type": "string",
+          "default": "",
+          "description": "日志文件保存路径（留空则使用工作区 .terminal-logs 目录）"
+        },
+        "terminalLogger.timestampFormat": {
+          "type": "string",
+          "default": "[YYYY-MM-DD HH:mm:ss]",
+          "description": "时间戳格式，支持 YYYY(年) MM(月) DD(日) HH(时) mm(分) ss(秒)"
+        },
+        "terminalLogger.fileNamePattern": {
+          "type": "string",
+          "default": "terminal_{terminalName}_{date}.log",
+          "description": "日志文件名模式，支持 {terminalName}、{date}、{time} 变量"
+        },
+        "terminalLogger.includeInput": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否记录用户输入命令"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "tsc -p ./ && node dist/test/integration.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.93.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  },
+  "dependencies": {
+    "vsce": "^2.15.0"
+  }
+}
