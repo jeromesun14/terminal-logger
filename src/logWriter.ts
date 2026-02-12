@@ -44,7 +44,11 @@ export class LogWriter implements ILogWriter {
 
         const timestampStr = ConfigManager.formatTimestamp(this.timestampFormat, timestamp);
         
+        // 按换行分割，保留非空行
         const lines = cleanData.split('\n').filter(line => line.trim() !== '');
+        if (lines.length === 0) {
+            return;
+        }
         const formattedLines = lines.map(line => `${timestampStr} ${line}`);
 
         const output = formattedLines.join('\n');
@@ -62,12 +66,19 @@ export class LogWriter implements ILogWriter {
      */
     static stripAnsi(str: string): string {
         return str
-            .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')      // CSI 序列
-            .replace(/\x1b\][^\x07]*\x07/g, '')           // OSC 序列 (BEL 终止)
-            .replace(/\x1b\][^\x1b]*\x1b\\/g, '')         // OSC 序列 (ST 终止)
-            .replace(/\x1b[()][0-9A-B]/g, '')             // 字符集选择
-            .replace(/\x1b\[[\?]?[0-9;]*[hlm]/g, '')     // 模式设置
-            .replace(/\x1b[=><=Nno|{}~78]/g, '')          // 单字符 ESC 序列
+            // CSI 序列: ESC [ ... 终止字符(字母)
+            .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+            // OSC 序列: ESC ] ... BEL
+            .replace(/\x1b\][^\x07]*\x07/g, '')
+            // OSC 序列: ESC ] ... ST (ESC \)
+            .replace(/\x1b\][^\x1b]*\x1b\\/g, '')
+            // 字符集选择: ESC ( 或 ESC )
+            .replace(/\x1b[()][0-9A-B]/g, '')
+            // 单字符 ESC 序列
+            .replace(/\x1b[=><=Nno|{}~78DMHEc]/g, '')
+            // 任何剩余的 ESC + 单字符
+            .replace(/\x1b./g, '')
+            // 回车符
             .replace(/\r/g, '');
     }
 

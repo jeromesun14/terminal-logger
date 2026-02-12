@@ -1,5 +1,11 @@
 # Terminal Logger - VSCode 终端日志记录插件
 
+## [1.0.2] - 2026-02-12
+
+### Fixed
+- 修复 Remote SSH 场景下只记录输入命令、未记录命令回显/输出的问题
+- 新增三级 fallback 机制：Shell Integration read() → onDidWriteTerminalData → script 命令，确保各场景下均可捕获终端输出
+
 ## [1.0.1] - 2026-02-12
 
 ### Changed
