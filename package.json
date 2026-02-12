@@ -2,9 +2,13 @@
   "name": "terminal-logger",
   "displayName": "Terminal Logger",
   "description": "自动记录终端输出到日志文件，支持时间戳和多终端分别记录",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "jeromesun",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeromesun14/terminal-logger.git"
+  },
   "engines": {
     "vscode": "^1.93.0"
   },
