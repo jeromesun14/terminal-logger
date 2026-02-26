@@ -6,6 +6,8 @@ export interface LogConfig {
     timestampFormat: string;
     fileNamePattern: string;
     includeInput: boolean;
+    showStatusBar: boolean;
+    showActivationMessage: boolean;
 }
 
 export interface TerminalInfo {

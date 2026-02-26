@@ -1,5 +1,14 @@
 # Terminal Logger - VSCode 终端日志记录插件
 
+## [1.0.3] - 2026-02-26
+
+### Fixed
+- 修复状态栏「终端日志: x 个终端」计数始终为 0 的问题，终端注册后立即更新计数
+
+### Added
+- 新增配置项 `terminalLogger.showStatusBar`：可开关状态栏显示
+- 新增配置项 `terminalLogger.showActivationMessage`：可开关激活提示消息
+
 ## [1.0.2] - 2026-02-12
 
 ### Fixed

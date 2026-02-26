@@ -14,6 +14,14 @@ export class StatusBarManager {
         this.statusBarItem.show();
     }
 
+    setVisible(visible: boolean): void {
+        if (visible) {
+            this.statusBarItem.show();
+        } else {
+            this.statusBarItem.hide();
+        }
+    }
+
     private updateDisplay(): void {
         if (this.isEnabled) {
             this.statusBarItem.text = `$(record) 终端日志: ${this.terminalCount} 个终端`;

@@ -34,6 +34,7 @@ export function activate(context: vscode.ExtensionContext) {
             isEnabled = config.enabled;
             statusBarManager.setEnabled(isEnabled);
             terminalManager.setEnabled(isEnabled);
+            statusBarManager.setVisible(config.showStatusBar);
         })
     );
 
@@ -70,7 +71,10 @@ export function activate(context: vscode.ExtensionContext) {
             outputChannel.appendLine(`[ShellExec Start] terminal="${terminal.name}", cmd="${commandLine}", readBroken=${terminalManager.isReadBroken(terminal)}`);
 
             // 确保该终端已注册 LogWriter
-            terminalManager.ensureTerminalRegistered(terminal);
+            const isNew = terminalManager.ensureTerminalRegistered(terminal);
+            if (isNew) {
+                statusBarManager.setTerminalCount(terminalManager.getActiveTerminalCount());
+            }
 
             // 如果该终端已知 read() 不工作，跳过 read()，依赖 fallback
             if (terminalManager.isReadBroken(terminal)) {
@@ -181,7 +185,10 @@ export function activate(context: vscode.ExtensionContext) {
                         return;
                     }
 
-                    terminalManager.ensureTerminalRegistered(terminal);
+                    const isNewTerminal = terminalManager.ensureTerminalRegistered(terminal);
+                    if (isNewTerminal) {
+                        statusBarManager.setTerminalCount(terminalManager.getActiveTerminalCount());
+                    }
                     terminalManager.logToTerminal(terminal, data);
                 })
             );
@@ -268,10 +275,13 @@ export function activate(context: vscode.ExtensionContext) {
     isEnabled = config.enabled;
     statusBarManager.setEnabled(isEnabled);
     statusBarManager.setTerminalCount(terminalManager.getActiveTerminalCount());
+    statusBarManager.setVisible(config.showStatusBar);
 
-    vscode.window.showInformationMessage(
-        'Terminal Logger 已激活，自动记录所有终端命令执行日志。'
-    );
+    if (config.showActivationMessage) {
+        vscode.window.showInformationMessage(
+            'Terminal Logger 已激活，自动记录所有终端命令执行日志。'
+        );
+    }
 }
 
 export function deactivate() {

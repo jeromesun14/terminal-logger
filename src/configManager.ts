@@ -12,7 +12,9 @@ export class ConfigManager {
             logPath: config.get<string>('logPath', ''),
             timestampFormat: config.get<string>('timestampFormat', '[YYYY-MM-DD HH:mm:ss]'),
             fileNamePattern: config.get<string>('fileNamePattern', 'terminal_{terminalName}_{date}.log'),
-            includeInput: config.get<boolean>('includeInput', true)
+            includeInput: config.get<boolean>('includeInput', true),
+            showStatusBar: config.get<boolean>('showStatusBar', true),
+            showActivationMessage: config.get<boolean>('showActivationMessage', true)
         };
     }
 

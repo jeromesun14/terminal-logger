@@ -2,7 +2,7 @@
   "name": "terminal-logger",
   "displayName": "Terminal Logger",
   "description": "自动记录终端输出到日志文件，支持时间戳和多终端分别记录",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "jeromesun",
   "license": "MIT",
   "repository": {
@@ -65,6 +65,16 @@
           "type": "boolean",
           "default": true,
           "description": "是否记录用户输入命令"
+        },
+        "terminalLogger.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否在状态栏显示「终端日志: x 个终端」"
+        },
+        "terminalLogger.showActivationMessage": {
+          "type": "boolean",
+          "default": true,
+          "description": "扩展激活时是否显示提示消息"
         }
       }
     }

@@ -22,13 +22,13 @@ export class TerminalManager {
     /**
      * 确保终端已注册（如果尚未注册，则创建 LogWriter）
      */
-    ensureTerminalRegistered(terminal: vscode.Terminal): void {
+    ensureTerminalRegistered(terminal: vscode.Terminal): boolean {
         if (!this.enabled) {
-            return;
+            return false;
         }
 
         if (this.terminals.has(terminal)) {
-            return;
+            return false;
         }
 
         const config = ConfigManager.getConfig();
@@ -46,6 +46,8 @@ export class TerminalManager {
             logPath,
             logWriter
         });
+
+        return true;
     }
 
     /**
