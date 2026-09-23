@@ -1,0 +1,4 @@
+{
+  "name": "Terminal Logger",
+  "install": "npm ci"
+}
