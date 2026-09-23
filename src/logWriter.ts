@@ -92,17 +92,54 @@ export class LogWriter {
     }
 
     /**
-     * 剥离 ANSI 转义序列
+     * 剥离 ANSI 转义序列，并把退格、回车造成的光标重绘折叠成最终可见文本。
      */
     static stripAnsi(str: string): string {
-        return str
+        const stripped = str
             .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
             .replace(/\x1b\][^\x07]*\x07/g, '')
             .replace(/\x1b\][^\x1b]*\x1b\\/g, '')
             .replace(/\x1b[()][0-9A-B]/g, '')
             .replace(/\x1b[=><=Nno|{}~78DMHEc]/g, '')
-            .replace(/\x1b./g, '')
-            .replace(/\r/g, '');
+            .replace(/\x1b./g, '');
+        return LogWriter.collapseCursor(stripped);
+    }
+
+    /**
+     * 按终端光标语义折叠一段文本：`\r` 回到行首，`\b` 左移一格，后续字符覆盖旧内容。
+     */
+    static collapseCursor(str: string): string {
+        const lines: string[] = [];
+        let current = '';
+        let col = 0;
+
+        for (const ch of str) {
+            if (ch === '\n') {
+                lines.push(current);
+                current = '';
+                col = 0;
+                continue;
+            }
+            if (ch === '\r') {
+                col = 0;
+                continue;
+            }
+            if (ch === '\b' || ch === '\x7f') {
+                if (col > 0) {
+                    col -= 1;
+                }
+                continue;
+            }
+            if (col < current.length) {
+                current = current.slice(0, col) + ch + current.slice(col + 1);
+            } else {
+                current += ch;
+            }
+            col += 1;
+        }
+
+        lines.push(current);
+        return lines.join('\n');
     }
 
     private formatBody(data: string, timestamp: Date): string | null {
