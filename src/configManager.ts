@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import * as path from 'path';
+import { formatFileName, formatTimestamp, loggingToggleTarget, pickWorkspaceRoot } from './format';
 import { LogConfig } from './types';
 
 export class ConfigManager {
@@ -11,53 +13,45 @@ export class ConfigManager {
             enabled: config.get<boolean>('enabled', true),
             logPath: config.get<string>('logPath', ''),
             timestampFormat: config.get<string>('timestampFormat', '[YYYY-MM-DD HH:mm:ss]'),
-            fileNamePattern: config.get<string>('fileNamePattern', 'terminal_{terminalName}_{date}.log'),
+            fileNamePattern: config.get<string>('fileNamePattern', 'terminal_{terminalName}_{date}_{time}_{session}.log'),
             includeInput: config.get<boolean>('includeInput', true),
             showStatusBar: config.get<boolean>('showStatusBar', true),
-            showActivationMessage: config.get<boolean>('showActivationMessage', true)
+            showActivationMessage: config.get<boolean>('showActivationMessage', true),
+            maxFileSizeKB: Math.max(0, config.get<number>('maxFileSizeKB', 512) ?? 512),
+            overflowPolicy: config.get<string>('overflowPolicy', 'discard') === 'rotate' ? 'rotate' : 'discard',
+            maxRotatedFiles: Math.max(0, config.get<number>('maxRotatedFiles', 3) ?? 3)
         };
     }
 
-    static getLogDirectory(): string {
+    static getLogDirectory(cwd?: vscode.Uri): string {
         const config = this.getConfig();
-        
-        if (config.logPath) {
+
+        if (config.logPath && config.logPath.trim()) {
             return config.logPath;
         }
 
-        // 默认使用工作区 .terminal-logs 目录
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (workspaceFolders && workspaceFolders.length > 0) {
-            return path.join(workspaceFolders[0].uri.fsPath, '.terminal-logs');
+        const folders = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
+        const root = pickWorkspaceRoot(cwd?.fsPath, folders);
+        if (root) {
+            return path.join(root, '.terminal-logs');
         }
 
-        // 如果没有工作区，使用用户主目录
-        return path.join(require('os').homedir(), '.terminal-logs');
+        return path.join(os.homedir(), '.terminal-logs');
     }
 
     static formatTimestamp(format: string, date: Date = new Date()): string {
-        const pad = (n: number) => n.toString().padStart(2, '0');
-        
-        return format
-            .replace('YYYY', date.getFullYear().toString())
-            .replace('MM', pad(date.getMonth() + 1))
-            .replace('DD', pad(date.getDate()))
-            .replace('HH', pad(date.getHours()))
-            .replace('mm', pad(date.getMinutes()))
-            .replace('ss', pad(date.getSeconds()));
+        return formatTimestamp(format, date);
     }
 
-    static formatFileName(pattern: string, terminalName: string, date: Date = new Date()): string {
-        const pad = (n: number) => n.toString().padStart(2, '0');
-        
-        const sanitizedTerminalName = terminalName.replace(/[<>:"/\\|?*]/g, '_');
-        const dateStr = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
-        const timeStr = `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-        
-        return pattern
-            .replace('{terminalName}', sanitizedTerminalName)
-            .replace('{date}', dateStr)
-            .replace('{time}', timeStr);
+    static formatFileName(pattern: string, terminalName: string, date: Date = new Date(), sessionId?: string): string {
+        return formatFileName(pattern, terminalName, date, sessionId);
+    }
+
+    static toggleTarget(): vscode.ConfigurationTarget {
+        const kind = loggingToggleTarget((vscode.workspace.workspaceFolders?.length ?? 0) > 0);
+        return kind === 'workspace'
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global;
     }
 
     static onDidChange(callback: () => void): vscode.Disposable {

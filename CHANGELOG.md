@@ -1,5 +1,16 @@
 # Terminal Logger - VSCode 终端日志记录插件
 
+## [1.0.4] - 2026-09-23
+
+### Fixed
+- 修复 Remote SSH 下只有第一个终端能记录、后续终端输入和输出都丢失的问题。空的 `read()` 不再把终端永久标记为失效，也不再向终端注入 `script`（注入时会关掉日志写入，导致之后完全不记录）
+- 修复连续打印时日志文件大小不增长的问题：输出到达后立即落盘；Shell Integration 停止推送后继续记录原始终端数据
+- 修复多个工作区只能保存一份日志的问题：每个终端会话使用独立日志文件；日志目录按终端所在工作区选择；开关改为当前工作区配置，避免一个窗口关掉其他窗口的记录
+
+### Added
+- 新增 `terminalLogger.maxFileSizeKB`（默认 512KB）、`terminalLogger.overflowPolicy`（`discard` 丢弃旧内容 / `rotate` 轮转新文件）和 `terminalLogger.maxRotatedFiles`，避免日志无限增长
+- 日志文件名支持 `{session}`，默认文件名包含时间与会话
+
 ## [1.0.3] - 2026-02-26
 
 ### Fixed

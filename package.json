@@ -2,7 +2,7 @@
   "name": "terminal-logger",
   "displayName": "Terminal Logger",
   "description": "自动记录终端输出到日志文件，支持时间戳和多终端分别记录",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "jeromesun",
   "license": "MIT",
   "repository": {
@@ -58,8 +58,8 @@
         },
         "terminalLogger.fileNamePattern": {
           "type": "string",
-          "default": "terminal_{terminalName}_{date}.log",
-          "description": "日志文件名模式，支持 {terminalName}、{date}、{time} 变量"
+          "default": "terminal_{terminalName}_{date}_{time}_{session}.log",
+          "description": "日志文件名模式，支持 {terminalName}、{date}、{time}、{session}。不含 {session} 时仍会自动追加会话后缀，避免多个终端写进同一个文件"
         },
         "terminalLogger.includeInput": {
           "type": "boolean",
@@ -75,6 +75,24 @@
           "type": "boolean",
           "default": true,
           "description": "扩展激活时是否显示提示消息"
+        },
+        "terminalLogger.maxFileSizeKB": {
+          "type": "number",
+          "default": 512,
+          "minimum": 0,
+          "description": "单个日志文件大小上限（KB）。超过后按 overflowPolicy 丢弃旧内容或轮转新文件。0 表示不限制"
+        },
+        "terminalLogger.overflowPolicy": {
+          "type": "string",
+          "enum": ["discard", "rotate"],
+          "default": "discard",
+          "description": "日志超过 maxFileSizeKB 时的处理方式：discard 丢弃旧内容，rotate 轮转到新文件"
+        },
+        "terminalLogger.maxRotatedFiles": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "overflowPolicy 为 rotate 时保留的历史文件数量"
         }
       }
     }

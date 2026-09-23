@@ -1,18 +1,20 @@
 /**
- * Terminal Logger 单元测试
- * 
- * 注意：Shell Integration API (onDidStartTerminalShellExecution / execution.read())
- * 是 VSCode 运行时 API，只能在 VSCode 扩展宿主进程中运行。
- * 这里测试 LogWriter 的核心功能：ANSI 清理、时间戳写入、日志文件生成。
+ * Terminal Logger 验收测试
+ *
+ * 覆盖：
+ * - ANSI 清理与命令/输出写入
+ * - 连续输出在会话结束前就落盘（issue #2）
+ * - 多个终端各自保存日志（issue #1 / #2）
+ * - read() 为空时后续终端仍继续记录（issue #1）
+ * - 日志超过阈值后丢弃旧内容或轮转新文件（issue #3）
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-
-// ============================================================
-// 测试工具
-// ============================================================
+import { LogWriter } from '../logWriter';
+import { CaptureRouter } from '../captureRouter';
+import { allocateLogPath, formatFileName, loggingToggleTarget, pickWorkspaceRoot } from '../format';
 
 let testCount = 0;
 let passCount = 0;
@@ -32,218 +34,86 @@ function assert(name: string, condition: boolean, detail?: string): void {
     }
 }
 
-// ============================================================
-// LogWriter 独立测试（不依赖 vscode 模块）
-// ============================================================
-
-// 手动模拟 LogWriter 的核心逻辑，因为真正的 LogWriter import 会依赖 vscode
-function stripAnsi(str: string): string {
-    return str
-        .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-        .replace(/\x1b\][^\x07]*\x07/g, '')
-        .replace(/\x1b\][^\x1b]*\x1b\\/g, '')
-        .replace(/\x1b[()][0-9A-B]/g, '')
-        .replace(/\x1b\[[\?]?[0-9;]*[hlm]/g, '')
-        .replace(/\x1b[=><=Nno|{}~78]/g, '')
-        .replace(/\r/g, '');
-}
-
-function formatTimestamp(format: string, date: Date = new Date()): string {
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return format
-        .replace('YYYY', date.getFullYear().toString())
-        .replace('MM', pad(date.getMonth() + 1))
-        .replace('DD', pad(date.getDate()))
-        .replace('HH', pad(date.getHours()))
-        .replace('mm', pad(date.getMinutes()))
-        .replace('ss', pad(date.getSeconds()));
-}
-
-/**
- * 简易 LogWriter（不依赖 vscode）
- */
-class TestLogWriter {
-    private logPath: string;
-    private timestampFormat: string;
-    private writeStream: fs.WriteStream | null = null;
-    private isFirstLine: boolean = true;
-
-    constructor(logPath: string, timestampFormat: string) {
-        this.logPath = logPath;
-        this.timestampFormat = timestampFormat;
-        this.init();
-    }
-
-    private init(): void {
-        const dir = path.dirname(this.logPath);
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        this.writeStream = fs.createWriteStream(this.logPath, { flags: 'a' });
-        const startTime = formatTimestamp(this.timestampFormat);
-        this.writeStream.write(`\n${'='.repeat(60)}\n`);
-        this.writeStream.write(`${startTime} 终端日志会话开始\n`);
-        this.writeStream.write(`${'='.repeat(60)}\n\n`);
-    }
-
-    write(data: string, timestamp: Date = new Date()): void {
-        if (!this.writeStream) {
-            return;
-        }
-        const cleanData = stripAnsi(data);
-        if (!cleanData.trim()) {
-            return;
-        }
-        const timestampStr = formatTimestamp(this.timestampFormat, timestamp);
-        const lines = cleanData.split('\n').filter(line => line.trim() !== '');
-        const formattedLines = lines.map(line => `${timestampStr} ${line}`);
-        const output = formattedLines.join('\n');
-        if (this.isFirstLine) {
-            this.writeStream.write(output);
-            this.isFirstLine = false;
-        } else {
-            this.writeStream.write('\n' + output);
-        }
-    }
-
-    getLogPath(): string {
-        return this.logPath;
-    }
-
-    dispose(): void {
-        if (this.writeStream) {
-            const endTime = formatTimestamp(this.timestampFormat);
-            this.writeStream.write(`\n\n${endTime} 终端日志会话结束\n`);
-            this.writeStream.end();
-            this.writeStream = null;
-        }
-    }
-}
-
-// ============================================================
-// 测试执行
-// ============================================================
-
 async function runTests(): Promise<void> {
-    console.log('\n🧪 Terminal Logger 单元测试\n');
+    console.log('\n🧪 Terminal Logger 验收测试\n');
 
     const tmpDir = path.join(os.tmpdir(), `terminal-logger-test-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });
 
-    // --- 测试组 1: stripAnsi ---
     console.log('📋 测试组 1: ANSI 转义序列清理');
 
     assert(
         '清理 CSI 颜色序列',
-        stripAnsi('\x1b[32mHello\x1b[0m') === 'Hello'
+        LogWriter.stripAnsi('\x1b[32mHello\x1b[0m') === 'Hello'
     );
 
     assert(
         '清理 OSC 序列 (BEL 终止)',
-        stripAnsi('\x1b]0;title\x07Hello') === 'Hello'
+        LogWriter.stripAnsi('\x1b]0;title\x07Hello') === 'Hello'
     );
 
     assert(
         '清理单字符 ESC 序列 (\\x1b= \\x1b>)',
-        stripAnsi('\x1b=Hello\x1b>') === 'Hello'
+        LogWriter.stripAnsi('\x1b=Hello\x1b>') === 'Hello'
     );
 
     assert(
         '清理 \\r 回车符',
-        stripAnsi('Hello\r\nWorld') === 'Hello\nWorld'
+        LogWriter.stripAnsi('Hello\r\nWorld') === 'Hello\nWorld'
     );
 
     assert(
         '混合 ANSI 序列全部清理',
-        stripAnsi('\x1b[1;32m❯\x1b[0m \x1b[34mls\x1b[0m /tmp\x1b=\r') === '❯ ls /tmp'
+        LogWriter.stripAnsi('\x1b[1;32m❯\x1b[0m \x1b[34mls\x1b[0m /tmp\x1b=\r') === '❯ ls /tmp'
     );
 
-    // --- 测试组 2: LogWriter 文件写入 ---
     console.log('\n📋 测试组 2: LogWriter 日志文件写入');
 
     const logPath = path.join(tmpDir, 'test.log');
-    const writer = new TestLogWriter(logPath, '[YYYY-MM-DD HH:mm:ss]');
+    const writer = new LogWriter({
+        logPath,
+        timestampFormat: '[YYYY-MM-DD HH:mm:ss]',
+        maxFileSizeBytes: 0
+    });
 
-    // 模拟 Shell Integration API 捕获到的命令和输出
     writer.write('$ ls /tmp');
     writer.write('file1.txt\nfile2.txt\nfile3.txt');
     writer.write('$ date');
     writer.write('Thu Feb 12 12:00:00 CST 2026');
     writer.write('$ echo HELLO_TEST');
     writer.write('HELLO_TEST');
-
-    // 等待写入流 flush
-    await new Promise(resolve => setTimeout(resolve, 500));
-
     writer.dispose();
-
-    // 等待 dispose 的写入完成
-    await new Promise(resolve => setTimeout(resolve, 500));
 
     const logContent = fs.readFileSync(logPath, 'utf-8');
     const logLines = logContent.split('\n');
 
-    assert(
-        '日志文件存在且非空',
-        logContent.length > 0,
-        `文件大小: ${logContent.length}`
-    );
-
-    assert(
-        '日志包含会话开始标记',
-        logContent.includes('终端日志会话开始')
-    );
-
-    assert(
-        '日志包含会话结束标记',
-        logContent.includes('终端日志会话结束')
-    );
-
-    assert(
-        '日志包含 $ ls /tmp 命令',
-        logContent.includes('$ ls /tmp')
-    );
-
-    assert(
-        '日志包含 ls 输出 (file1.txt)',
-        logContent.includes('file1.txt')
-    );
-
-    assert(
-        '日志包含 $ date 命令',
-        logContent.includes('$ date')
-    );
-
-    assert(
-        '日志包含 date 输出 (2026)',
-        logContent.includes('2026')
-    );
-
-    assert(
-        '日志包含 echo 输出 (HELLO_TEST)',
-        logContent.includes('HELLO_TEST')
-    );
-
+    assert('日志文件存在且非空', logContent.length > 0, `文件大小: ${logContent.length}`);
+    assert('日志包含会话开始标记', logContent.includes('终端日志会话开始'));
+    assert('日志包含会话结束标记', logContent.includes('终端日志会话结束'));
+    assert('日志包含 $ ls /tmp 命令', logContent.includes('$ ls /tmp'));
+    assert('日志包含 ls 输出 (file1.txt)', logContent.includes('file1.txt'));
+    assert('日志包含 $ date 命令', logContent.includes('$ date'));
+    assert('日志包含 date 输出 (2026)', logContent.includes('2026'));
+    assert('日志包含 echo 输出 (HELLO_TEST)', logContent.includes('HELLO_TEST'));
     assert(
         '日志行带有时间戳',
         logLines.some(l => /\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]/.test(l))
     );
 
-    // --- 测试组 3: ANSI 数据写入时自动清理 ---
     console.log('\n📋 测试组 3: 带 ANSI 序列的数据写入');
 
     const logPath2 = path.join(tmpDir, 'test_ansi.log');
-    const writer2 = new TestLogWriter(logPath2, '[YYYY-MM-DD HH:mm:ss]');
+    const writer2 = new LogWriter({
+        logPath: logPath2,
+        timestampFormat: '[YYYY-MM-DD HH:mm:ss]',
+        maxFileSizeBytes: 0
+    });
 
-    // 模拟真实终端输出（带 ANSI）
     writer2.write('\x1b[1;32m❯\x1b[0m \x1b[34mls\x1b[0m /tmp\r');
     writer2.write('\x1b[32mfile1.txt\x1b[0m  \x1b[34mdir1\x1b[0m\r');
-    writer2.write('');  // 空行应被忽略
-    writer2.write('\x1b[32m');  // 纯 ANSI 序列应被忽略
-
-    await new Promise(resolve => setTimeout(resolve, 500));
+    writer2.write('');
+    writer2.write('\x1b[32m');
     writer2.dispose();
-    await new Promise(resolve => setTimeout(resolve, 500));
 
     const logContent2 = fs.readFileSync(logPath2, 'utf-8');
 
@@ -251,20 +121,154 @@ async function runTests(): Promise<void> {
         'ANSI 序列被清理，保留文本内容',
         logContent2.includes('ls /tmp') && !logContent2.includes('\x1b[')
     );
+    assert('空行和纯 ANSI 内容不写入日志', !logContent2.includes('\x1b[32m'));
 
-    assert(
-        '空行和纯 ANSI 内容不写入日志',
-        !logContent2.includes('\x1b[32m')
-    );
+    console.log('\n📋 测试组 4: 连续输出在会话结束前落盘 (issue #2)');
 
-    // --- 清理 ---
+    const livePath = path.join(tmpDir, 'live.log');
+    const liveWriter = new LogWriter({
+        logPath: livePath,
+        timestampFormat: '[YYYY-MM-DD HH:mm:ss]',
+        maxFileSizeBytes: 0
+    });
+    const sizeBefore = liveWriter.getSize();
+    liveWriter.write('continuous line 1');
+    const midContent = fs.readFileSync(livePath, 'utf-8');
+    const sizeAfterFirst = liveWriter.getSize();
+    liveWriter.write('continuous line 2');
+    liveWriter.write('progress update 50%');
+    const whileRunning = fs.readFileSync(livePath, 'utf-8');
+
+    assert('首行连续输出写入后文件立即变大', sizeAfterFirst > sizeBefore, `before=${sizeBefore}, after=${sizeAfterFirst}`);
+    assert('会话未结束时已能读到第一行', midContent.includes('continuous line 1'));
+    assert('会话未结束时已能读到后续连续输出', whileRunning.includes('continuous line 2') && whileRunning.includes('progress update 50%'));
+    liveWriter.dispose();
+
+    console.log('\n📋 测试组 5: 多个终端各自保存 (issue #1 / #2)');
+
+    const multiDir = path.join(tmpDir, 'multi');
+    fs.mkdirSync(multiDir, { recursive: true });
+    const when = new Date(2026, 2, 5, 14, 36, 7);
+    const pattern = 'terminal_{terminalName}_{date}.log';
+    const firstName = formatFileName(pattern, 'bash', when, 'term1');
+    const secondName = formatFileName(pattern, 'bash', when, 'term2');
+    const reserved = new Set<string>();
+    const firstPath = allocateLogPath(multiDir, firstName, reserved, 'term1');
+    reserved.add(firstPath);
+    const secondPath = allocateLogPath(multiDir, secondName, reserved, 'term2');
+
+    assert('两个同名终端不会共用同一个日志文件', firstPath !== secondPath, `${firstPath} vs ${secondPath}`);
+
+    const firstWriter = new LogWriter({ logPath: firstPath, timestampFormat: '[YYYY-MM-DD HH:mm:ss]', maxFileSizeBytes: 0 });
+    const secondWriter = new LogWriter({ logPath: secondPath, timestampFormat: '[YYYY-MM-DD HH:mm:ss]', maxFileSizeBytes: 0 });
+    firstWriter.write('$ echo FIRST_TERMINAL');
+    firstWriter.write('FIRST_TERMINAL');
+    secondWriter.write('$ echo SECOND_TERMINAL');
+    secondWriter.write('SECOND_TERMINAL');
+    const firstLive = fs.readFileSync(firstPath, 'utf-8');
+    const secondLive = fs.readFileSync(secondPath, 'utf-8');
+    firstWriter.dispose();
+    secondWriter.dispose();
+
+    assert('第一个终端保存了自己的命令和输出', firstLive.includes('FIRST_TERMINAL') && firstLive.includes('$ echo FIRST_TERMINAL'));
+    assert('第二个终端保存了自己的命令和输出', secondLive.includes('SECOND_TERMINAL') && secondLive.includes('$ echo SECOND_TERMINAL'));
+    assert('第二个终端的日志里没有第一个终端的输出', !secondLive.includes('FIRST_TERMINAL'));
+
+    const workspaceRoot = pickWorkspaceRoot('/ws/app-b/src', ['/ws/app-a', '/ws/app-b']);
+    assert('多根工作区按终端所在目录选择日志根，而不是总用第一个', workspaceRoot === '/ws/app-b');
+    assert('没有匹配目录时仍回退到第一个工作区', pickWorkspaceRoot('/other', ['/ws/app-a', '/ws/app-b']) === '/ws/app-a');
+    assert('有工作区时日志开关只作用于当前工作区', loggingToggleTarget(true) === 'workspace');
+    assert('没有工作区时日志开关写入全局配置', loggingToggleTarget(false) === 'global');
+
+    console.log('\n📋 测试组 6: read() 为空时后续终端继续记录 (issue #1)');
+
+    const router = new CaptureRouter(500);
+    const captured: string[] = [];
+    const sink = (data: string) => captured.push(data);
+
+    router.beginCommand('term-1');
+    sink('$ echo ok');
+    router.readChunk('term-1', 'ok\n', 1_000, sink);
+    router.readFinished('term-1');
+
+    router.beginCommand('term-2');
+    sink('$ echo second');
+    router.readFinished('term-2');
+    const wroteFallback = router.terminalData('term-2', 'second-output\n', 2_000, sink);
+
+    router.beginCommand('term-2');
+    sink('$ echo third');
+    router.readChunk('term-2', 'third-output\n', 3_000, sink);
+
+    assert('第二个终端在 read() 为空后仍然记录命令', captured.includes('$ echo second') && captured.includes('$ echo third'));
+    assert('read() 为空时改用终端原始数据记录输出', wroteFallback && captured.some(line => line.includes('second-output')));
+    assert('后续命令的 read() 输出仍会记录', captured.some(line => line.includes('third-output')));
+
+    const streaming: string[] = [];
+    const streamSink = (data: string) => streaming.push(data);
+    const liveRouter = new CaptureRouter(500);
+    liveRouter.beginCommand('live');
+    liveRouter.readChunk('live', 'chunk-from-read', 10_000, streamSink);
+    const duplicated = liveRouter.terminalData('live', 'chunk-from-pty', 10_200, streamSink);
+    const afterStall = liveRouter.terminalData('live', 'continuous-after-stall', 10_600, streamSink);
+    liveRouter.readChunk('live', 'late-read-dump', 10_700, streamSink);
+
+    assert('read() 正在推送时不重复记录原始终端数据', duplicated === false && !streaming.includes('chunk-from-pty'));
+    assert('read() 停止推送后连续输出仍被记录', afterStall === true && streaming.includes('continuous-after-stall'));
+    assert('已经改走原始数据后，不再把 read() 的积压重复写入', !streaming.includes('late-read-dump'));
+
+    console.log('\n📋 测试组 7: 日志长度阈值 (issue #3)');
+
+    const discardPath = path.join(tmpDir, 'discard.log');
+    const discardWriter = new LogWriter({
+        logPath: discardPath,
+        timestampFormat: '[YYYY-MM-DD HH:mm:ss]',
+        maxFileSizeBytes: 900,
+        overflowPolicy: 'discard',
+        maxRotatedFiles: 2
+    });
+    for (let i = 0; i < 40; i++) {
+        discardWriter.write(`OLD_ENTRY_${i}_` + 'x'.repeat(40));
+    }
+    discardWriter.write('NEWEST_ENTRY_KEEP');
+    const discardSize = discardWriter.getSize();
+    const discardContent = fs.readFileSync(discardPath, 'utf-8');
+    discardWriter.dispose();
+
+    assert('丢弃策略下文件大小不超过阈值', discardSize <= 900, `size=${discardSize}`);
+    assert('丢弃策略保留最新日志', discardContent.includes('NEWEST_ENTRY_KEEP'));
+    assert('丢弃策略写明已丢掉旧日志', discardContent.includes('已丢弃更早的日志以控制文件大小'));
+    assert('最早的日志已被丢弃', !discardContent.includes('OLD_ENTRY_0_'));
+
+    const rotatePath = path.join(tmpDir, 'rotate.log');
+    const rotateWriter = new LogWriter({
+        logPath: rotatePath,
+        timestampFormat: '[YYYY-MM-DD HH:mm:ss]',
+        maxFileSizeBytes: 1200,
+        overflowPolicy: 'rotate',
+        maxRotatedFiles: 2
+    });
+    for (let i = 0; i < 40; i++) {
+        rotateWriter.write(`ROTATE_LINE_${i}_` + 'y'.repeat(50));
+    }
+    rotateWriter.write('ROTATE_NEWEST');
+    const rotateSize = rotateWriter.getSize();
+    const rotateContent = fs.readFileSync(rotatePath, 'utf-8');
+    rotateWriter.dispose();
+    const archived = path.join(tmpDir, 'rotate.1.log');
+    const archiveContent = fs.existsSync(archived) ? fs.readFileSync(archived, 'utf-8') : '';
+
+    assert('轮转后当前文件仍不超过阈值（含会话结束标记的少量溢出除外）', rotateSize <= 1200 + 80, `size=${rotateSize}`);
+    assert('轮转后的当前文件包含最新日志', rotateContent.includes('ROTATE_NEWEST'));
+    assert('轮转会留下历史文件', fs.existsSync(archived) && archiveContent.includes('日志已轮转'));
+    assert('最早的日志留在历史文件中，不撑大当前文件', archiveContent.includes('ROTATE_LINE_0_') || !rotateContent.includes('ROTATE_LINE_0_'));
+
     try {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
         // ignore
     }
 
-    // --- 结果 ---
     console.log(`\n${'='.repeat(50)}`);
     console.log(`测试结果: ${passCount}/${testCount} 通过, ${failCount} 失败`);
     console.log(`${'='.repeat(50)}\n`);

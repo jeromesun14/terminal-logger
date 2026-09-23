@@ -54,8 +54,13 @@ npx vsce package
 | `terminalLogger.enabled` | `true` | 是否启用终端日志记录 |
 | `terminalLogger.logPath` | `""` | 日志文件保存路径（留空使用工作区 `.terminal-logs` 目录） |
 | `terminalLogger.timestampFormat` | `"[YYYY-MM-DD HH:mm:ss]"` | 时间戳格式 |
-| `terminalLogger.fileNamePattern` | `"terminal_{terminalName}_{date}.log"` | 日志文件名模式 |
+| `terminalLogger.fileNamePattern` | `"terminal_{terminalName}_{date}_{time}_{session}.log"` | 日志文件名模式，支持 `{terminalName}`、`{date}`、`{time}`、`{session}` |
 | `terminalLogger.includeInput` | `true` | 是否记录用户输入命令 |
+| `terminalLogger.showStatusBar` | `true` | 是否在状态栏显示「终端日志: x 个终端」 |
+| `terminalLogger.showActivationMessage` | `true` | 扩展激活时是否显示提示消息 |
+| `terminalLogger.maxFileSizeKB` | `512` | 单个日志文件大小上限（KB），`0` 表示不限制 |
+| `terminalLogger.overflowPolicy` | `"discard"` | 超过上限时 `discard` 丢弃旧内容，或 `rotate` 轮转新文件 |
+| `terminalLogger.maxRotatedFiles` | `3` | 轮转时保留的历史文件数量 |
 
 ## 日志示例
 
