@@ -54,8 +54,13 @@ npx vsce package
 | `terminalLogger.enabled` | `true` | Enable/disable terminal logging |
 | `terminalLogger.logPath` | `""` | Log file path (empty = workspace `.terminal-logs` directory) |
 | `terminalLogger.timestampFormat` | `"[YYYY-MM-DD HH:mm:ss]"` | Timestamp format |
-| `terminalLogger.fileNamePattern` | `"terminal_{terminalName}_{date}.log"` | Log file name pattern |
+| `terminalLogger.fileNamePattern` | `"terminal_{terminalName}_{date}_{time}_{session}.log"` | Log file name pattern. Supports `{terminalName}`, `{date}`, `{time}`, `{session}` |
 | `terminalLogger.includeInput` | `true` | Whether to log user input commands |
+| `terminalLogger.showStatusBar` | `true` | Show the status bar item |
+| `terminalLogger.showActivationMessage` | `true` | Show a message when the extension activates |
+| `terminalLogger.maxFileSizeKB` | `512` | Max size of one log file in KB. `0` means unlimited |
+| `terminalLogger.overflowPolicy` | `"discard"` | When the limit is hit: `discard` drops old lines, `rotate` starts a new file |
+| `terminalLogger.maxRotatedFiles` | `3` | How many rotated history files to keep |
 
 ## Log Example
 

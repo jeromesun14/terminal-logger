@@ -8,6 +8,9 @@ export interface LogConfig {
     includeInput: boolean;
     showStatusBar: boolean;
     showActivationMessage: boolean;
+    maxFileSizeKB: number;
+    overflowPolicy: 'discard' | 'rotate';
+    maxRotatedFiles: number;
 }
 
 export interface TerminalInfo {
