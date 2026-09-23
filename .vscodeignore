@@ -1,7 +1,12 @@
 .vscode/**
 .vscode-test/**
+.cursor/**
 src/**
+dist/test/**
 .gitignore
+.eslintrc.json
+tsconfig.json
+CHANGELOG.md
 **/*.ts
 **/*.map
 node_modules/**
