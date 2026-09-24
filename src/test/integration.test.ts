@@ -8,6 +8,7 @@
  * - read() 为空时后续终端仍继续记录（issue #1）
  * - 日志超过阈值后丢弃旧内容或轮转新文件（issue #3）
  * - 命令输入按整行记录，而不是一行一个字母（issue #7）
+ * - Remote SSH 上 bash/zsh/Windows 的逐字回显在命令期间到达时仍按整行记录（issue #9）
  */
 
 import * as fs from 'fs';
@@ -15,6 +16,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { LogWriter } from '../logWriter';
 import { CaptureRouter } from '../captureRouter';
+import { normalizeShellLine } from '../ptyAssembler';
 import { allocateLogPath, formatFileName, loggingToggleTarget, pickWorkspaceRoot } from '../format';
 
 let testCount = 0;
@@ -279,7 +281,7 @@ async function runTests(): Promise<void> {
     const issue7 = new CaptureRouter(500);
     const issue7Log: string[] = [];
     const recordIssue7 = (data: string) => issue7Log.push(data);
-    const typingEcho = ['e\becho', '"', '"', '\b', 'a"\b', 'g"\b', 'e"\b', 't"\b', '\b" \b\b', 'a"\b', 'i"\b', 'n"\b'];
+    const typingEcho = ['e\becho', '"', '"', '\b', 'a"\b', 'g"\b', 'e"\b', 't"\b', '\b" \b\b', '\b" \b\b', 'a"\b', 'i"\b', 'n"\b'];
     const typingPs = ['\b p', '\b\b  \b', '\b', 'p', '\bps'];
 
     for (const chunk of typingEcho) {
@@ -339,6 +341,100 @@ async function runTests(): Promise<void> {
 
     assert('read() 为空时，命令执行期间的原始输出仍然记录', wroteRemote && remoteLog.some(entry => entry.includes('second-output')));
     assert('命令结束后的提示符和按键不再记录', remotePrompt === false && !remoteLog.some(entry => entry.includes('user@host') || entry.includes('\b')));
+
+    console.log('\n📋 测试组 9: Remote SSH 逐字回显按整行记录 (issue #9)');
+
+    const singleLetter = (entries: string[]) => entries.some(entry => /^[a-zA-Z"]$/.test(entry.trim()) || entry.includes('\b'));
+
+    const bash = new CaptureRouter(500);
+    const bashLog: string[] = [];
+    bash.beginCommand('ubuntu');
+    bash.noteCommand('ubuntu', 'echo hi');
+    let bashAt = 60_000;
+    for (const ch of 'echo hi') {
+        bash.terminalData('ubuntu', ch, bashAt, data => bashLog.push(data));
+        bashAt += 120;
+    }
+    bash.terminalData('ubuntu', '\r\n', bashAt, data => bashLog.push(data));
+    bashAt += 40;
+    const bashOutput = bash.terminalData('ubuntu', 'hi\r\n', bashAt, data => bashLog.push(data));
+    const bashPrompt = bash.terminalData('ubuntu', 'dev@ubuntu:~$ \r\n', bashAt + 30, data => bashLog.push(data));
+    bash.endCommand('ubuntu');
+
+    assert('Ubuntu bash 逐字回显不会拆成单字母行', !singleLetter(bashLog) && !bashLog.some(entry => entry.trim() === 'e' || entry.trim() === 'echo'));
+    assert('Ubuntu bash 不重复记录已由 Shell Integration 记下的命令', !bashLog.some(entry => entry.trim() === 'echo hi'));
+    assert('Ubuntu bash 命令输出仍然记录', bashOutput && bashLog.includes('hi'));
+    assert('Ubuntu bash 提示符不写入日志', bashPrompt === false && !bashLog.some(entry => entry.includes('dev@ubuntu')));
+
+    const bashPlain = new CaptureRouter(500);
+    const bashPlainLog: string[] = [];
+    bashPlain.beginCommand('bash');
+    let plainAt = 70_000;
+    for (const ch of 'echo hi') {
+        bashPlain.terminalData('bash', ch, plainAt, data => bashPlainLog.push(data));
+        plainAt += 100;
+    }
+    bashPlain.terminalData('bash', '\r\n', plainAt, data => bashPlainLog.push(data));
+    assert('没有 Shell Integration 命令文本时，bash 输入折叠成一行', bashPlainLog.length === 1 && bashPlainLog[0] === 'echo hi');
+
+    const zshRemote = new CaptureRouter(500);
+    const zshLog: string[] = [];
+    zshRemote.beginCommand('zsh');
+    zshRemote.noteCommand('zsh', 'echo "again"');
+    let zshAt = 80_000;
+    for (const chunk of typingEcho) {
+        zshRemote.terminalData('zsh', chunk, zshAt, data => zshLog.push(data));
+        zshAt += 150;
+    }
+    zshRemote.terminalData('zsh', '\r\n', zshAt, data => zshLog.push(data));
+    const zshOutput = zshRemote.terminalData('zsh', 'again\r\n', zshAt + 20, data => zshLog.push(data));
+    zshRemote.terminalData('zsh', '%                                                                                \r\n', zshAt + 40, data => zshLog.push(data));
+    zshRemote.terminalData('zsh', '➜  ~ \r\n', zshAt + 60, data => zshLog.push(data));
+    for (const chunk of typingPs) {
+        zshRemote.terminalData('zsh', chunk, zshAt + 200, data => zshLog.push(data));
+    }
+    zshRemote.terminalData('zsh', '\r\n', zshAt + 400, data => zshLog.push(data));
+
+    assert('zsh 退格重绘不会拆成单字母行', !singleLetter(zshLog) && zshLog.every(entry => !entry.includes('\b')));
+    assert('zsh 命令输出仍然记录', zshOutput && zshLog.includes('again'));
+    assert('zsh 提示符不写入日志', !zshLog.some(entry => entry.includes('➜') || entry.trim() === '%'));
+    assert('zsh 已记录的命令不会从回显再写一遍', !zshLog.some(entry => entry.replace(/\s+/g, '').includes('echo"again')));
+
+    const windows = new CaptureRouter(500);
+    const windowsLog: string[] = [];
+    windows.beginCommand('ps');
+    windows.terminalData('ps', 'hello from powershell\r\n', 90_000, data => windowsLog.push(data));
+    windows.terminalData('ps', 'PS C:\\Users\\me>\r\n', 90_100, data => windowsLog.push(data));
+    windows.terminalData('ps', 'C:\\Users\\me\\file.txt\r\n', 90_200, data => windowsLog.push(data));
+    windows.terminalData('ps', 'C:\\Users\\me>\r\n', 90_300, data => windowsLog.push(data));
+    windows.terminalData('ps', 'MacBook-Pro:src jerome$\r\n', 90_400, data => windowsLog.push(data));
+    const psPromptStripped = windows.terminalData('ps', 'PS C:\\Users\\me> Get-Date\r\n', 90_500, data => windowsLog.push(data));
+
+    assert('PowerShell 和 cmd 提示符不写入日志', !windowsLog.some(entry => entry.startsWith('PS ') || entry === 'C:\\Users\\me>' || entry.includes('MacBook-Pro')));
+    assert('Windows 命令输出和路径仍然记录', windowsLog.includes('hello from powershell') && windowsLog.includes('C:\\Users\\me\\file.txt'));
+    assert('提示符和命令在同一行时只留下命令', psPromptStripped && windowsLog.includes('Get-Date'));
+
+    const streamingChars = new CaptureRouter(500);
+    const streamChars: string[] = [];
+    streamingChars.beginCommand('fast');
+    let fastAt = 100_000;
+    for (let i = 0; i < 20; i++) {
+        streamingChars.terminalData('fast', 'x', fastAt, data => streamChars.push(data));
+        fastAt += 10;
+    }
+    streamingChars.terminalData('fast', '\n', fastAt, data => streamChars.push(data));
+    const streamed = streamChars.join('');
+    assert('连续单字符输出会记下来，而不是每个字母一行', streamChars.length <= 2 && streamed === 'x'.repeat(20) && streamChars.every(entry => entry.length >= 4));
+
+    assert('纯提示符被识别出来', normalizeShellLine('dev@ubuntu:~$') === null && normalizeShellLine('➜  ~') === null && normalizeShellLine('%') === null && normalizeShellLine('MacBook-Pro:src jerome$') === null);
+    assert('普通输出不会被当成提示符', normalizeShellLine('  PID TTY           TIME CMD') === '  PID TTY           TIME CMD' && normalizeShellLine('C:\\Users\\me\\file.txt') === 'C:\\Users\\me\\file.txt');
+
+    const shortOutput = new CaptureRouter(500);
+    const shortLog: string[] = [];
+    shortOutput.beginCommand('ssh');
+    const wroteShort = shortOutput.terminalData('ssh', 'ok', 110_000, data => shortLog.push(data));
+    const shortTail = shortOutput.endCommand('ssh');
+    assert('没有换行的短输出在命令结束时仍然保留', wroteShort === false && shortLog.length === 0 && shortTail === 'ok');
 
     try {
         fs.rmSync(tmpDir, { recursive: true, force: true });

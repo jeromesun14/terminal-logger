@@ -1,5 +1,10 @@
 # Terminal Logger - VSCode 终端日志记录插件
 
+## [1.0.6] - 2026-09-24
+
+### Fixed
+- 修复 v1.0.5 在 Remote SSH（Ubuntu）下仍把 bash/zsh 正在输入的命令按一个字母一行写入日志的问题。原始终端数据会先跨分片折叠退格和回车重绘，只在形成完整行后落盘；bash、zsh、PowerShell 和 cmd 的提示符不再写入。Windows、Linux、macOS 的命令输出仍会记录
+
 ## [1.0.5] - 2026-09-23
 
 ### Fixed
