@@ -5,6 +5,7 @@ import { ConfigManager } from './configManager';
 import { TerminalManager } from './terminalManager';
 import { StatusBarManager } from './statusBarManager';
 import { CaptureRouter } from './captureRouter';
+import { normalizeShellLine } from './ptyAssembler';
 
 let terminalManager: TerminalManager;
 let statusBarManager: StatusBarManager;
@@ -61,11 +62,13 @@ export function activate(context: vscode.ExtensionContext) {
             const commandLine = execution.commandLine.value;
             const key = terminalKey(terminal);
 
-            captureRouter.beginCommand(key);
+            const echoed = captureRouter.beginCommand(key).trim();
+            const typed = commandLine.trim() || (echoed && normalizeShellLine(echoed)) || '';
             outputChannel.appendLine(`[ShellExec Start] terminal="${terminal.name}", cmd="${commandLine}"`);
 
-            if (isEnabled && ConfigManager.getConfig().includeInput && commandLine.trim()) {
-                writeToTerminal(terminal, `$ ${commandLine}`);
+            if (isEnabled && ConfigManager.getConfig().includeInput && typed) {
+                captureRouter.noteCommand(key, typed);
+                writeToTerminal(terminal, `$ ${typed}`);
             }
 
             let chunkCount = 0;
@@ -92,9 +95,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.window.onDidEndTerminalShellExecution((event) => {
-            captureRouter.endCommand(terminalKey(event.terminal));
+            const tail = captureRouter.endCommand(terminalKey(event.terminal));
             if (!isEnabled) {
                 return;
+            }
+            if (tail) {
+                writeToTerminal(event.terminal, tail);
             }
             const exitCode = event.exitCode;
             outputChannel.appendLine(`[ShellExec End] terminal="${event.terminal.name}", exitCode=${exitCode}`);
