@@ -84,7 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
             } catch (err: any) {
                 outputChannel.appendLine(`[ShellExec Error] terminal="${terminal.name}": ${err.message}`);
             } finally {
-                captureRouter.readFinished(key);
+                captureRouter.readFinished(key, Date.now());
                 outputChannel.appendLine(`[ShellExec Read Done] terminal="${terminal.name}", totalChunks=${chunkCount}`);
             }
         })
@@ -92,6 +92,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.window.onDidEndTerminalShellExecution((event) => {
+            captureRouter.endCommand(terminalKey(event.terminal));
             if (!isEnabled) {
                 return;
             }
@@ -104,7 +105,8 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // 原始终端数据。read() 正在持续返回时不重复记录；read() 空闲后用它保住连续输出。
+    // 原始终端数据只补命令执行期间、read() 不再推送的输出。
+    // 提示符和逐字输入（命令开始前 / 结束后）不记录，避免一行一个字母。
     try {
         const onDidWriteTerminalData = (vscode.window as any).onDidWriteTerminalData;
         if (typeof onDidWriteTerminalData === 'function') {

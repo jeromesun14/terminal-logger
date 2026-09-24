@@ -7,6 +7,7 @@
  * - 多个终端各自保存日志（issue #1 / #2）
  * - read() 为空时后续终端仍继续记录（issue #1）
  * - 日志超过阈值后丢弃旧内容或轮转新文件（issue #3）
+ * - 命令输入按整行记录，而不是一行一个字母（issue #7）
  */
 
 import * as fs from 'fs';
@@ -58,8 +59,18 @@ async function runTests(): Promise<void> {
     );
 
     assert(
-        '清理 \\r 回车符',
+        '回车换行仍分成两行',
         LogWriter.stripAnsi('Hello\r\nWorld') === 'Hello\nWorld'
+    );
+
+    assert(
+        '回车覆盖当前行，而不是把前后拼在一起',
+        LogWriter.stripAnsi('foo\rbar') === 'bar'
+    );
+
+    assert(
+        '退格重绘折叠成最终文本',
+        LogWriter.stripAnsi('e\becho "again"') === 'echo "again"'
     );
 
     assert(
@@ -262,6 +273,72 @@ async function runTests(): Promise<void> {
     assert('轮转后的当前文件包含最新日志', rotateContent.includes('ROTATE_NEWEST'));
     assert('轮转会留下历史文件', fs.existsSync(archived) && archiveContent.includes('日志已轮转'));
     assert('最早的日志留在历史文件中，不撑大当前文件', archiveContent.includes('ROTATE_LINE_0_') || !rotateContent.includes('ROTATE_LINE_0_'));
+
+    console.log('\n📋 测试组 8: 命令按整行记录，不逐字拆行 (issue #7)');
+
+    const issue7 = new CaptureRouter(500);
+    const issue7Log: string[] = [];
+    const recordIssue7 = (data: string) => issue7Log.push(data);
+    const typingEcho = ['e\becho', '"', '"', '\b', 'a"\b', 'g"\b', 'e"\b', 't"\b', '\b" \b\b', 'a"\b', 'i"\b', 'n"\b'];
+    const typingPs = ['\b p', '\b\b  \b', '\b', 'p', '\bps'];
+
+    for (const chunk of typingEcho) {
+        issue7.terminalData('zsh', chunk, 1_000, recordIssue7);
+    }
+
+    issue7.beginCommand('zsh');
+    recordIssue7('$ echo "again"');
+    issue7.readChunk('zsh', 'again\n', 2_000, recordIssue7);
+    issue7.readFinished('zsh', 2_010);
+    const duplicatedOutput = issue7.terminalData('zsh', 'again\n', 2_020, recordIssue7);
+    const promptDuringGap = issue7.terminalData('zsh', '➜  ~ \n', 2_040, recordIssue7);
+    issue7.endCommand('zsh');
+    const promptAfterEnd = issue7.terminalData('zsh', '➜  ~ \n', 2_100, recordIssue7);
+
+    for (const chunk of typingPs) {
+        issue7.terminalData('zsh', chunk, 3_000, recordIssue7);
+    }
+
+    issue7.beginCommand('zsh');
+    recordIssue7('$ ps');
+    issue7.readChunk('zsh', '  PID TTY           TIME CMD\n67072 ttys001    0:00.09 /bin/zsh -l\n', 4_000, recordIssue7);
+    issue7.readFinished('zsh', 4_010);
+    issue7.endCommand('zsh');
+    issue7.terminalData('zsh', '➜  ~ \n', 4_200, recordIssue7);
+
+    const readablePath = path.join(tmpDir, 'issue7.log');
+    const readableWriter = new LogWriter({
+        logPath: readablePath,
+        timestampFormat: '[YYYY-MM-DD HH:mm:ss]',
+        maxFileSizeBytes: 0
+    });
+    for (const entry of issue7Log) {
+        readableWriter.write(entry);
+    }
+    readableWriter.dispose();
+    const readable = fs.readFileSync(readablePath, 'utf-8');
+    const readableLines = readable.split('\n').map(line => line.replace(/^\[[^\]]+\] /, ''));
+
+    assert('敲命令时的逐字回显不写入日志', typingEcho.every(chunk => !issue7Log.includes(chunk)) && typingPs.every(chunk => !issue7Log.includes(chunk)));
+    assert('整行命令被记录', issue7Log.includes('$ echo "again"') && issue7Log.includes('$ ps'));
+    assert('命令输出只保留一份', duplicatedOutput === false && issue7Log.filter(entry => entry.includes('again\n')).length === 1);
+    assert('提示符不写入日志', promptDuringGap === false && promptAfterEnd === false && !readable.includes('➜'));
+    assert('日志里能看到完整命令和输出', readable.includes('$ echo "again"') && readable.includes('again') && readable.includes('$ ps') && readable.includes('PID TTY'));
+    assert('日志里没有退格，也没有单字母行', !readable.includes('\b') && !readableLines.some(line => line === 'e' || line === 'p' || line === '"'));
+
+    const remote = new CaptureRouter(500);
+    const remoteLog: string[] = [];
+    const remoteSink = (data: string) => remoteLog.push(data);
+    remote.beginCommand('ssh');
+    remoteSink('$ echo second');
+    remote.readFinished('ssh');
+    const wroteRemote = remote.terminalData('ssh', 'second-output\n', 5_000, remoteSink);
+    remote.endCommand('ssh');
+    const remotePrompt = remote.terminalData('ssh', 'user@host:~$ \n', 5_100, remoteSink);
+    remote.terminalData('ssh', 'l\bls\n', 5_200, remoteSink);
+
+    assert('read() 为空时，命令执行期间的原始输出仍然记录', wroteRemote && remoteLog.some(entry => entry.includes('second-output')));
+    assert('命令结束后的提示符和按键不再记录', remotePrompt === false && !remoteLog.some(entry => entry.includes('user@host') || entry.includes('\b')));
 
     try {
         fs.rmSync(tmpDir, { recursive: true, force: true });
