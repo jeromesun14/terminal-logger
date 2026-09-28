@@ -66,9 +66,18 @@ export function activate(context: vscode.ExtensionContext) {
             const typed = commandLine.trim() || (echoed && normalizeShellLine(echoed)) || '';
             outputChannel.appendLine(`[ShellExec Start] terminal="${terminal.name}", cmd="${commandLine}"`);
 
-            if (isEnabled && ConfigManager.getConfig().includeInput && typed) {
+            if (typed) {
                 captureRouter.noteCommand(key, typed);
-                writeToTerminal(terminal, `$ ${typed}`);
+                if (isEnabled && ConfigManager.getConfig().includeInput) {
+                    writeToTerminal(terminal, `$ ${typed}`);
+                }
+            }
+            // 命令开始事件可能晚于输出。先把已经到达、还没落盘的输出补上。
+            const early = captureRouter.takeEarlyOutput(key);
+            if (isEnabled) {
+                for (const line of early) {
+                    writeToTerminal(terminal, line);
+                }
             }
 
             let chunkCount = 0;
@@ -95,7 +104,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.window.onDidEndTerminalShellExecution((event) => {
-            const tail = captureRouter.endCommand(terminalKey(event.terminal));
+            const tail = captureRouter.endCommand(terminalKey(event.terminal), Date.now());
             if (!isEnabled) {
                 return;
             }
@@ -111,8 +120,8 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // 原始终端数据只补命令执行期间、read() 不再推送的输出。
-    // 提示符和逐字输入（命令开始前 / 结束后）不记录，避免一行一个字母。
+    // 原始终端数据补上 read() 没拿到的输出，包括命令开始前和结束后短暂到达的行。
+    // 已经由 read() 写过的行不重复记。提示符和逐字输入不记录，避免一行一个字母。
     try {
         const onDidWriteTerminalData = (vscode.window as any).onDidWriteTerminalData;
         if (typeof onDidWriteTerminalData === 'function') {
