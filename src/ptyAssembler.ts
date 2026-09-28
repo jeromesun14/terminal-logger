@@ -158,11 +158,13 @@ export class PtyAssembler {
         const dt = this.lastAt === 0 ? Number.POSITIVE_INFINITY : now - this.lastAt;
         this.lastAt = now;
         const visible = PtyAssembler.visibleLength(data);
+        // 人敲退格、方向键时一次只有几个可见字符。程序用 \r 刷进度、或一次写来很长的输出，不算在编辑。
+        const humanEdit = editing && visible < 16;
 
         const lines = this.screen.push(data);
-        this.pendingIsOutput = this.markPendingOutput(editing, visible, dt);
+        this.pendingIsOutput = this.markPendingOutput(humanEdit, visible, dt);
 
-        if (editing) {
+        if (humanEdit) {
             return lines;
         }
 
@@ -201,11 +203,14 @@ export class PtyAssembler {
         this.screen.reset();
     }
 
-    private markPendingOutput(editing: boolean, visible: number, dt: number): boolean {
+    private markPendingOutput(humanEdit: boolean, visible: number, dt: number): boolean {
         if (this.screen.pending().length === 0) {
             return false;
         }
-        if (editing || (visible <= 1 && dt > 40)) {
+        if (!humanEdit && visible >= 16) {
+            return true;
+        }
+        if (humanEdit || (visible <= 1 && dt > 40)) {
             return false;
         }
         if (visible >= 2 || (visible === 1 && dt <= 40)) {
@@ -233,14 +238,20 @@ export class PtyAssembler {
     }
 }
 
+export interface ClassifiedShellLine {
+    /** 这一行带有 shell 提示符。纯提示符时 text 为 null；提示符后面跟着命令时 text 是命令。 */
+    fromPrompt: boolean;
+    text: string | null;
+}
+
 /**
- * 整行都是 shell 提示符时返回 null。
+ * 整行都是 shell 提示符时 text 为 null。
  * 提示符后面还跟着命令时，去掉提示符，留下命令文本。
  */
-export function normalizeShellLine(line: string): string | null {
+export function classifyShellLine(line: string): ClassifiedShellLine {
     const trimmed = line.trim();
     if (!trimmed) {
-        return null;
+        return { fromPrompt: false, text: null };
     }
 
     const prefixed: RegExp[] = [
@@ -258,11 +269,15 @@ export function normalizeShellLine(line: string): string | null {
             continue;
         }
         const rest = (match[1] ?? '').trim();
-        return rest || null;
+        return { fromPrompt: true, text: rest || null };
     }
 
     if (/^[%$#>❯➜]$/.test(trimmed)) {
-        return null;
+        return { fromPrompt: true, text: null };
     }
-    return line.replace(/[ \t]+$/g, '');
+    return { fromPrompt: false, text: line.replace(/[ \t]+$/g, '') };
+}
+
+export function normalizeShellLine(line: string): string | null {
+    return classifyShellLine(line).text;
 }

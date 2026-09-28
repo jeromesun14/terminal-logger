@@ -9,11 +9,13 @@
  * - 日志超过阈值后丢弃旧内容或轮转新文件（issue #3）
  * - 命令输入按整行记录，而不是一行一个字母（issue #7）
  * - Remote SSH 上 bash/zsh/Windows 的逐字回显在命令期间到达时仍按整行记录（issue #9）
+ * - read() 缺行、或输出晚于命令结束时不丢输出；本地两条通道不重复（issue #12）
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { spawnSync } from 'child_process';
 import { LogWriter } from '../logWriter';
 import { CaptureRouter } from '../captureRouter';
 import { normalizeShellLine } from '../ptyAssembler';
@@ -221,14 +223,17 @@ async function runTests(): Promise<void> {
     const streamSink = (data: string) => streaming.push(data);
     const liveRouter = new CaptureRouter(500);
     liveRouter.beginCommand('live');
-    liveRouter.readChunk('live', 'chunk-from-read', 10_000, streamSink);
-    const duplicated = liveRouter.terminalData('live', 'chunk-from-pty', 10_200, streamSink);
-    const afterStall = liveRouter.terminalData('live', 'continuous-after-stall', 10_600, streamSink);
-    liveRouter.readChunk('live', 'late-read-dump', 10_700, streamSink);
+    liveRouter.readChunk('live', 'chunk-from-read\n', 10_000, streamSink);
+    const replayed = liveRouter.terminalData('live', 'chunk-from-read\n', 10_200, streamSink);
+    const onlyOnPty = liveRouter.terminalData('live', 'chunk-from-pty\n', 10_210, streamSink);
+    const afterStall = liveRouter.terminalData('live', 'continuous-after-stall\n', 10_600, streamSink);
+    liveRouter.readChunk('live', 'continuous-after-stall\n', 10_700, streamSink);
+    liveRouter.readChunk('live', 'late-new-line\n', 10_710, streamSink);
 
-    assert('read() 正在推送时不重复记录原始终端数据', duplicated === false && !streaming.includes('chunk-from-pty'));
-    assert('read() 停止推送后连续输出仍被记录', afterStall === true && streaming.includes('continuous-after-stall'));
-    assert('已经改走原始数据后，不再把 read() 的积压重复写入', !streaming.includes('late-read-dump'));
+    assert('read() 已经写过的行，原始终端数据不重复记', replayed === false && streaming.filter(entry => entry.includes('chunk-from-read')).length === 1);
+    assert('read() 正在推送时，它没拿到的原始输出仍然记录', onlyOnPty === true && streaming.some(entry => entry.includes('chunk-from-pty')));
+    assert('read() 停止推送后连续输出仍被记录，且不会被随后的 read() 再写一遍', afterStall === true && streaming.filter(entry => entry.includes('continuous-after-stall')).length === 1);
+    assert('read() 后来才到的新行仍然记录', streaming.some(entry => entry.includes('late-new-line')));
 
     console.log('\n📋 测试组 7: 日志长度阈值 (issue #3)');
 
@@ -435,6 +440,226 @@ async function runTests(): Promise<void> {
     const wroteShort = shortOutput.terminalData('ssh', 'ok', 110_000, data => shortLog.push(data));
     const shortTail = shortOutput.endCommand('ssh');
     assert('没有换行的短输出在命令结束时仍然保留', wroteShort === false && shortLog.length === 0 && shortTail === 'ok');
+
+    console.log('\n📋 测试组 10: 命令输出偶发丢失 (issue #12)');
+
+    assert(
+        'date 输出不会被当成提示符',
+        normalizeShellLine('Mon Sep 28 10:11:05 AM CST 2026') === 'Mon Sep 28 10:11:05 AM CST 2026'
+    );
+
+    const raced: string[] = [];
+    const race = new CaptureRouter(500);
+    for (let i = 0; i < 20; i++) {
+        const at = 2_000_000 + i * 1000;
+        const output = `Mon Sep 28 10:11:${String(i).padStart(2, '0')} AM CST 2026`;
+        race.beginCommand('ssh');
+        race.noteCommand('ssh', 'date');
+        raced.push('$ date');
+        race.readChunk('ssh', '\n', at + 10, () => undefined);
+        race.readFinished('ssh', at + 12);
+        race.endCommand('ssh', at + 20);
+        race.terminalData('ssh', output + '\r\n', at + 45, line => raced.push(line));
+        race.terminalData('ssh', 'dev@ubuntu:~$ \r\n', at + 60, line => raced.push(line));
+    }
+    const racedOutputs = raced.filter(line => line.startsWith('Mon Sep 28'));
+    assert('Remote SSH：命令结束后才到的 date 输出仍记录', racedOutputs.length === 20, `got=${racedOutputs.length}`);
+    assert('Remote SSH：结束后的提示符不写入', !raced.some(line => line.includes('dev@ubuntu')));
+    assert('Remote SSH：20 次 date 输出各保留一行', new Set(racedOutputs).size === 20);
+
+    const earlyLog: string[] = [];
+    const early = new CaptureRouter(500);
+    early.terminalData('ssh', 'Mon Sep 28 10:11:07 AM CST 2026\r\n', 3_000_000, line => earlyLog.push(line));
+    early.beginCommand('ssh');
+    early.noteCommand('ssh', 'date');
+    earlyLog.push('$ date');
+    for (const line of early.takeEarlyOutput('ssh')) {
+        earlyLog.push(line);
+    }
+    early.readChunk('ssh', '\n', 3_000_010, () => undefined);
+    early.endCommand('ssh', 3_000_020);
+    assert(
+        'Remote SSH：命令开始事件晚于输出时，输出补在命令后面',
+        earlyLog[0] === '$ date' && earlyLog[1] === 'Mon Sep 28 10:11:07 AM CST 2026'
+    );
+
+    const burstCount = 2000;
+    const burstLines = Array.from({ length: burstCount }, (_, i) => `H${String(i).padStart(4, '0')}_${'C'.repeat(32)}`);
+    const lossy: string[] = [];
+    const lossyRouter = new CaptureRouter(500);
+    lossyRouter.beginCommand('ssh');
+    lossyRouter.noteCommand('ssh', 'seq');
+    let burstAt = 4_000_000;
+    for (let i = 0; i < burstLines.length; i++) {
+        burstAt += 5;
+        if (i % 10 === 0) {
+            lossyRouter.readChunk('ssh', burstLines[i] + '\n', burstAt, line => lossy.push(line));
+        }
+        lossyRouter.terminalData('ssh', burstLines[i] + '\r\n', burstAt, line => lossy.push(line));
+    }
+    const lossyTail = lossyRouter.endCommand('ssh', burstAt + 1);
+    if (lossyTail) {
+        lossy.push(lossyTail);
+    }
+    const lossyJoined = lossy.join('\n');
+    const lossyMissing = burstLines.filter(line => !lossyJoined.includes(line));
+    const lossyDup = burstLines.filter(line => lossyJoined.split(line).length - 1 !== 1);
+    assert('高速输出：read() 持续有数据但只覆盖 10% 时，其余行仍全部保留', lossyMissing.length === 0, `missing=${lossyMissing.length}`);
+    assert('高速输出：read() 和原始数据重叠的行只保留一份', lossyDup.length === 0, `dup=${lossyDup.length}`);
+
+    const repeated = 'y';
+    const repeatLog: string[] = [];
+    const repeatRouter = new CaptureRouter(500);
+    repeatRouter.beginCommand('fast');
+    repeatRouter.noteCommand('fast', 'yes');
+    const repeatBlob = Array.from({ length: 100 }, () => repeated).join('\n') + '\n';
+    repeatRouter.terminalData('fast', repeatBlob, 5_000_000, line => repeatLog.push(line));
+    repeatRouter.readChunk('fast', repeatBlob, 5_000_010, line => repeatLog.push(line));
+    const repeatCount = repeatLog.join('\n').split('\n').filter(line => line.trim() === 'y').length;
+    assert('相同的输出行重复出现时不会被去重吃掉', repeatCount === 100, `count=${repeatCount}`);
+
+    const localLog: string[] = [];
+    const localRouter = new CaptureRouter(500);
+    localRouter.beginCommand('local');
+    localRouter.noteCommand('local', 'seq');
+    const localBlob = burstLines.join('\n') + '\n';
+    localRouter.readChunk('local', localBlob, 6_000_000, line => localLog.push(line));
+    let localAt = 6_000_001;
+    const localRaw = burstLines.join('\r\n') + '\r\n';
+    for (let offset = 0; offset < localRaw.length;) {
+        const size = [3, 17, 64, 240, 1024][offset % 5];
+        localRouter.terminalData('local', localRaw.slice(offset, offset + size), localAt, line => localLog.push(line));
+        offset += size;
+        localAt += 1;
+    }
+    const localJoined = localLog.join('\n');
+    const localMissing = burstLines.filter(line => !localJoined.includes(line));
+    const localDup = burstLines.filter(line => localJoined.split(line).length - 1 !== 1);
+    assert('本地：read() 拿到全部输出时，原始回放不重复也不丢行', localMissing.length === 0 && localDup.length === 0, `missing=${localMissing.length}, dup=${localDup.length}`);
+
+    const ansiLog: string[] = [];
+    const ansiRouter = new CaptureRouter(500);
+    ansiRouter.beginCommand('local');
+    ansiRouter.noteCommand('local', 'ls');
+    ansiRouter.readChunk('local', '\x1b[32mfile.txt\x1b[0m\n', 6_500_000, line => ansiLog.push(line));
+    const ansiDup = ansiRouter.terminalData('local', 'file.txt\r\n', 6_500_010, line => ansiLog.push(line));
+    assert('本地：带颜色的 read() 和纯文本原始行只保留一份', ansiDup === false && ansiLog.filter(line => line.includes('file.txt')).length === 1);
+
+    const bulkRouter = new CaptureRouter(500);
+    const bulkLog: string[] = [];
+    bulkRouter.beginCommand('bulk');
+    bulkRouter.noteCommand('bulk', 'cat');
+    const bulkBody = 'BULK_' + 'B'.repeat(60000);
+    const wroteBulk = bulkRouter.terminalData('bulk', '\r' + bulkBody, 7_000_000, line => bulkLog.push(line));
+    assert('以回车开头的长输出不会被当成逐字编辑丢掉', wroteBulk && bulkLog.some(line => line === bulkBody));
+
+    const liveBurstPath = path.join(tmpDir, 'issue12-burst.log');
+    const liveBurst = new LogWriter({
+        logPath: liveBurstPath,
+        timestampFormat: '[YYYY-MM-DD HH:mm:ss]',
+        maxFileSizeBytes: 0
+    });
+    liveBurst.write('$ seq');
+    for (const line of lossy) {
+        liveBurst.write(line);
+    }
+    liveBurst.dispose();
+    const liveBurstText = fs.readFileSync(liveBurstPath, 'utf-8');
+    assert('高速输出写入日志文件后首尾行都在', liveBurstText.includes(burstLines[0]) && liveBurstText.includes(burstLines[burstLines.length - 1]));
+    assert('高速输出写入日志文件后没有因为阈值被截断', liveBurstText.includes('H1999_'));
+
+    const ptyScript = [
+        'import sys',
+        'n = 800',
+        'for i in range(n):',
+        '    sys.stdout.write("LINE_%04d_%s\\n" % (i, "A" * 48))',
+        'for i in range(120):',
+        '    sys.stdout.write("\\rPROG_%04d" % i)',
+        'sys.stdout.write("\\n")',
+        'sys.stdout.write("BULK_" + "B" * 20000 + "\\n")',
+        'sys.stdout.flush()'
+    ].join('\n');
+    const ptyGen = path.join(tmpDir, 'issue12_gen.py');
+    const ptyWrap = path.join(tmpDir, 'issue12_wrap.py');
+    fs.writeFileSync(ptyGen, ptyScript);
+    fs.writeFileSync(ptyWrap, [
+        'import os, pty, select, subprocess, sys',
+        'master, slave = pty.openpty()',
+        'proc = subprocess.Popen([sys.executable, sys.argv[1]], stdin=slave, stdout=slave, stderr=slave, close_fds=True)',
+        'os.close(slave)',
+        'buf = bytearray()',
+        'while True:',
+        '    if proc.poll() is not None:',
+        '        while True:',
+        '            ready, _, _ = select.select([master], [], [], 0.2)',
+        '            if not ready:',
+        '                break',
+        '            try:',
+        '                data = os.read(master, 65536)',
+        '            except OSError:',
+        '                break',
+        '            if not data:',
+        '                break',
+        '            buf.extend(data)',
+        '        break',
+        '    ready, _, _ = select.select([master], [], [], 5)',
+        '    if not ready:',
+        '        continue',
+        '    try:',
+        '        data = os.read(master, 65536)',
+        '    except OSError:',
+        '        break',
+        '    if not data:',
+        '        break',
+        '    buf.extend(data)',
+        'os.close(master)',
+        'sys.stdout.buffer.write(bytes(buf))'
+    ].join('\n'));
+    const ptyRun = spawnSync('python3', [ptyWrap, ptyGen], { maxBuffer: 16 * 1024 * 1024 });
+    const ptyRaw = ptyRun.stdout ? ptyRun.stdout.toString('latin1') : '';
+    assert('本地 PTY 高速输出采集成功', ptyRun.status === 0 && ptyRaw.includes('LINE_0000_') && ptyRaw.includes('LINE_0799_'), `status=${ptyRun.status}, bytes=${ptyRaw.length}`);
+
+    const feedPty = (mode: 'remote' | 'local-full' | 'local-lossy'): string[] => {
+        const router = new CaptureRouter(500);
+        const collected: string[] = [];
+        const sink = (line: string) => collected.push(line);
+        const markers = Array.from(ptyRaw.matchAll(/LINE_\d{4}_A+/g), match => match[0]);
+        const uniqueMarkers = markers.filter((line, index) => markers.indexOf(line) === index);
+        router.beginCommand('pty');
+        router.noteCommand('pty', 'python3');
+        if (mode === 'local-full') {
+            router.readChunk('pty', uniqueMarkers.join('\n') + '\n', 8_000_000, sink);
+        } else if (mode === 'local-lossy') {
+            const partial = uniqueMarkers.filter((_, index) => index % 4 === 0);
+            router.readChunk('pty', partial.join('\n') + '\n', 8_000_000, sink);
+        }
+        let at = 8_000_100;
+        for (let offset = 0; offset < ptyRaw.length;) {
+            const size = [1, 8, 64, 511, 2048][offset % 5];
+            router.terminalData('pty', ptyRaw.slice(offset, offset + size), at, sink);
+            offset += size;
+            at += 1;
+        }
+        const tail = router.endCommand('pty', at);
+        if (tail) {
+            collected.push(tail);
+        }
+        return collected;
+    };
+
+        if (ptyRaw.includes('LINE_0799_')) {
+        const fullMarkers = Array.from({ length: 800 }, (_, i) => `LINE_${String(i).padStart(4, '0')}_` + 'A'.repeat(48));
+        for (const mode of ['remote', 'local-full', 'local-lossy'] as const) {
+            const collected = feedPty(mode);
+            const flat = collected.join('').replace(/\n/g, '');
+            const missing = fullMarkers.filter(line => !flat.includes(line));
+            const duplicated = fullMarkers.filter(line => flat.split(line).length - 1 !== 1);
+            assert(`真实 PTY ${mode}：800 行高速输出不丢`, missing.length === 0, `missing=${missing.length}`);
+            assert(`真实 PTY ${mode}：800 行高速输出不重复`, duplicated.length === 0, `dup=${duplicated.length}`);
+            assert(`真实 PTY ${mode}：回车进度最终行还在`, flat.includes('PROG_0119'));
+            assert(`真实 PTY ${mode}：无换行长块还在`, flat.includes('BULK_' + 'B'.repeat(20000)));
+        }
+    }
 
     try {
         fs.rmSync(tmpDir, { recursive: true, force: true });
