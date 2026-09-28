@@ -537,6 +537,14 @@ async function runTests(): Promise<void> {
     const localDup = burstLines.filter(line => localJoined.split(line).length - 1 !== 1);
     assert('本地：read() 拿到全部输出时，原始回放不重复也不丢行', localMissing.length === 0 && localDup.length === 0, `missing=${localMissing.length}, dup=${localDup.length}`);
 
+    const ansiLog: string[] = [];
+    const ansiRouter = new CaptureRouter(500);
+    ansiRouter.beginCommand('local');
+    ansiRouter.noteCommand('local', 'ls');
+    ansiRouter.readChunk('local', '\x1b[32mfile.txt\x1b[0m\n', 6_500_000, line => ansiLog.push(line));
+    const ansiDup = ansiRouter.terminalData('local', 'file.txt\r\n', 6_500_010, line => ansiLog.push(line));
+    assert('本地：带颜色的 read() 和纯文本原始行只保留一份', ansiDup === false && ansiLog.filter(line => line.includes('file.txt')).length === 1);
+
     const bulkRouter = new CaptureRouter(500);
     const bulkLog: string[] = [];
     bulkRouter.beginCommand('bulk');

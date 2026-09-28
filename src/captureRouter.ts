@@ -10,6 +10,7 @@
  * 提示符和逐字输入仍然不记录。
  */
 import { PtyAssembler, classifyShellLine } from './ptyAssembler';
+import { LogWriter } from './logWriter';
 
 interface ChannelLines {
     read: string[];
@@ -294,7 +295,7 @@ export class CaptureRouter {
     private static logicalLines(chunk: string): string[] {
         const lines: string[] = [];
         for (const part of chunk.split('\n')) {
-            const cleaned = part.replace(/\r/g, '');
+            const cleaned = CaptureRouter.dedupeKey(part);
             if (cleaned.trim() === '') {
                 continue;
             }
@@ -304,6 +305,6 @@ export class CaptureRouter {
     }
 
     private static dedupeKey(line: string): string {
-        return line.replace(/\r/g, '').replace(/[ \t]+$/g, '');
+        return LogWriter.stripAnsi(line).replace(/\r/g, '').replace(/[ \t]+$/g, '');
     }
 }
