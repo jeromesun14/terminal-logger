@@ -6,6 +6,7 @@ import { TerminalManager } from './terminalManager';
 import { StatusBarManager } from './statusBarManager';
 import { CaptureRouter } from './captureRouter';
 import { normalizeShellLine } from './ptyAssembler';
+import { LoggingPtyTerminal } from './ptyTerminal';
 
 let terminalManager: TerminalManager;
 let statusBarManager: StatusBarManager;
@@ -14,6 +15,14 @@ let outputChannel: vscode.OutputChannel;
 const captureRouter = new CaptureRouter();
 const terminalKeys: WeakMap<vscode.Terminal, string> = new WeakMap();
 let nextTerminalKey = 1;
+
+// 两条捕获通道的健康状态。Shell Integration read() 拿不到数据、原始终端数据 API 又未授权时
+// （Remote SSH 常见组合），日志会只剩头尾，此时提示用户改用插件自建 PTY 的终端。
+let sawShellExecOutput = false;
+let rawDataAvailable = false;
+let execCount = 0;
+let fallbackNotified = false;
+let ptyTerminalSeq = 0;
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Terminal Logger 扩展已激活');
@@ -80,6 +89,7 @@ export function activate(context: vscode.ExtensionContext) {
                         continue;
                     }
                     captureRouter.readChunk(key, data, Date.now(), chunk => {
+                        sawShellExecOutput = true;
                         outputChannel.appendLine(`[ShellExec Output] terminal="${terminal.name}", chunk#${chunkCount}, len=${chunk.length}`);
                         writeToTerminal(terminal, chunk);
                     });
@@ -102,21 +112,26 @@ export function activate(context: vscode.ExtensionContext) {
             if (tail) {
                 writeToTerminal(event.terminal, tail);
             }
+            execCount++;
             const exitCode = event.exitCode;
             outputChannel.appendLine(`[ShellExec End] terminal="${event.terminal.name}", exitCode=${exitCode}`);
 
             if (exitCode !== undefined && exitCode !== 0) {
                 writeToTerminal(event.terminal, `[命令退出码: ${exitCode}]`);
             }
+
+            notifyIfCaptureUnavailable();
         })
     );
 
     // 原始终端数据只补命令执行期间、read() 不再推送的输出。
     // 提示符和逐字输入（命令开始前 / 结束后）不记录，避免一行一个字母。
+    //
+    // onDidWriteTerminalData 是 proposed API：未授权时「注册」这一步就会抛错，
+    // 只做 typeof 判断会误报可用（Remote SSH 上每次激活都踩到），因此注册必须一起放进 try。
     try {
         const onDidWriteTerminalData = (vscode.window as any).onDidWriteTerminalData;
         if (typeof onDidWriteTerminalData === 'function') {
-            outputChannel.appendLine('[Terminal Logger] onDidWriteTerminalData API 可用，启用实时数据捕获');
             context.subscriptions.push(
                 onDidWriteTerminalData((event: { terminal: vscode.Terminal; data: string }) => {
                     if (!isEnabled) {
@@ -129,11 +144,14 @@ export function activate(context: vscode.ExtensionContext) {
                     });
                 })
             );
+            rawDataAvailable = true;
+            outputChannel.appendLine('[Terminal Logger] onDidWriteTerminalData 已注册，启用原始终端数据捕获');
         } else {
             outputChannel.appendLine('[Terminal Logger] onDidWriteTerminalData API 不可用');
         }
     } catch (e: any) {
-        outputChannel.appendLine(`[Terminal Logger] 检测 onDidWriteTerminalData 失败: ${e.message}`);
+        rawDataAvailable = false;
+        outputChannel.appendLine(`[Terminal Logger] onDidWriteTerminalData 不可用: ${e?.message ?? e}`);
     }
 
     context.subscriptions.push(
@@ -204,6 +222,16 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(clearCurrentLogCommand);
 
+    // 自建 PTY 的日志终端：不依赖 Shell Integration，也不依赖 proposed API，
+    // 用于 Remote SSH 等拿不到终端数据的环境。
+    const newLoggingTerminalCommand = vscode.commands.registerCommand(
+        'terminalLogger.newLoggingTerminal',
+        () => {
+            createLoggingTerminal();
+        }
+    );
+    context.subscriptions.push(newLoggingTerminalCommand);
+
     const config = ConfigManager.getConfig();
     isEnabled = config.enabled;
     statusBarManager.setEnabled(isEnabled);
@@ -226,12 +254,13 @@ function terminalKey(terminal: vscode.Terminal): string {
     return key;
 }
 
-function writeToTerminal(terminal: vscode.Terminal, data: string): void {
+function writeToTerminal(terminal: vscode.Terminal, data: string, cwdPath?: string): void {
     if (!isEnabled) {
         return;
     }
     try {
-        const isNew = terminalManager.ensureTerminalRegistered(terminal);
+        const cwdOverride = cwdPath ? vscode.Uri.file(cwdPath) : undefined;
+        const isNew = terminalManager.ensureTerminalRegistered(terminal, cwdOverride);
         if (isNew) {
             statusBarManager.setTerminalCount(terminalManager.getActiveTerminalCount());
         }
@@ -239,6 +268,65 @@ function writeToTerminal(terminal: vscode.Terminal, data: string): void {
     } catch (err: any) {
         outputChannel.appendLine(`[Log Error] terminal="${terminal.name}": ${err.message}`);
     }
+}
+
+/**
+ * 新建一个由插件自己提供 PTY 的终端。
+ * 它的输入/输出不经过 VSCode 的捕获通道，因此在任何环境下都能完整记录。
+ */
+function createLoggingTerminal(): void {
+    const config = ConfigManager.getConfig();
+
+    if (!config.enabled) {
+        vscode.window.showWarningMessage('终端日志记录当前是关闭状态，请先开启再新建日志终端。');
+        return;
+    }
+
+    ptyTerminalSeq += 1;
+    const name = `日志终端 ${ptyTerminalSeq}`;
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    let terminal: vscode.Terminal | undefined;
+
+    const pty = new LoggingPtyTerminal({
+        cwd,
+        includeInput: config.includeInput,
+        writeLog: text => {
+            if (terminal) {
+                writeToTerminal(terminal, text, cwd);
+            }
+        },
+        onDebug: message => outputChannel.appendLine(message)
+    });
+
+    terminal = vscode.window.createTerminal({ name, pty });
+    terminal.show();
+    outputChannel.appendLine(`[PTY Terminal] 已创建 name="${name}", cwd=${cwd ?? '(未指定)'}`);
+}
+
+/**
+ * 两条通道都拿不到数据时，明确告诉用户，并给出可一键执行的替代方案。
+ */
+function notifyIfCaptureUnavailable(): void {
+    if (fallbackNotified || isEnabled === false) {
+        return;
+    }
+    if (rawDataAvailable || sawShellExecOutput || execCount < 2) {
+        return;
+    }
+
+    fallbackNotified = true;
+    outputChannel.appendLine('[Terminal Logger] Shell Integration 无输出且原始终端数据 API 不可用，提示改用自建 PTY 终端');
+
+    vscode.window
+        .showWarningMessage(
+            'Terminal Logger 在当前环境捕获不到终端输出（Remote SSH 常见）。可改用自建 PTY 的日志终端，记录不受环境限制。',
+            '新建日志终端'
+        )
+        .then(choice => {
+            if (choice === '新建日志终端') {
+                vscode.commands.executeCommand('terminalLogger.newLoggingTerminal');
+            }
+        });
 }
 
 export function deactivate() {

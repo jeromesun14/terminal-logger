@@ -15,8 +15,9 @@ export class TerminalManager {
 
     /**
      * 确保终端已注册（如果尚未注册，则创建 LogWriter）
+     * @param cwdOverride 自建 PTY 终端没有 shellIntegration，由调用方给出工作目录
      */
-    ensureTerminalRegistered(terminal: vscode.Terminal): boolean {
+    ensureTerminalRegistered(terminal: vscode.Terminal, cwdOverride?: vscode.Uri): boolean {
         if (!this.enabled) {
             return false;
         }
@@ -26,7 +27,7 @@ export class TerminalManager {
         }
 
         const config = ConfigManager.getConfig();
-        const cwd = terminal.shellIntegration?.cwd;
+        const cwd = cwdOverride ?? terminal.shellIntegration?.cwd;
         const logDir = ConfigManager.getLogDirectory(cwd);
         const sessionId = createSessionId();
         const fileName = ConfigManager.formatFileName(

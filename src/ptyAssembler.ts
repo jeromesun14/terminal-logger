@@ -250,6 +250,8 @@ export function normalizeShellLine(line: string): string | null {
         /^[A-Za-z]:\\[^>]*>\s*(.*)$/,
         /^➜\s+\S+\s*(.*)$/,
         /^[❯]\s+\S+\s*(.*)$/,
+        // zsh 未配置时的默认提示符：主机名 + %（或 #）
+        /^[A-Za-z0-9][A-Za-z0-9._-]*[%#]\s*(.*)$/,
         /^[A-Za-z0-9][A-Za-z0-9._-]*:\S+\s+[A-Za-z0-9._-]+[$#]\s*(.*)$/
     ];
     for (const pattern of prefixed) {

@@ -46,6 +46,7 @@ npx vsce package
 | `Terminal Logger: 开启/关闭日志记录` | Toggle logging on/off |
 | `Terminal Logger: 打开日志文件夹` | Open the log directory in your file manager |
 | `Terminal Logger: 清空当前日志` | Clear the current log file |
+| `Terminal Logger: 新建日志终端` | Create a terminal whose PTY is owned by the extension (for Remote SSH and other environments where terminal data is unavailable) |
 
 ## Configuration
 
@@ -83,6 +84,10 @@ This extension uses VSCode's **Shell Integration API** (`onDidStartTerminalShell
 1. Captures the command text via `execution.commandLine.value`
 2. Streams the command output via `execution.read()`
 3. Strips ANSI escape codes and writes timestamped lines to the log file
+
+When Shell Integration yields no output (e.g. `read()` is always empty in some Remote SSH setups), raw terminal data from `onDidWriteTerminalData` is used as a fallback. That API is a proposed API and throws when not enabled, so it is treated as an optional enhancement only.
+
+If neither channel works, the extension tells you so and you can run `Terminal Logger: New Logging Terminal`. That terminal is backed by a PTY created by the extension itself (python3 + `pty.openpty()` bridge on Linux / macOS, plain pipes on Windows), so input and output never pass through the IDE capture channels and are always recorded. It also honours `terminal.integrated.defaultProfile` (bash / zsh / fish / PowerShell / cmd).
 
 ## License
 

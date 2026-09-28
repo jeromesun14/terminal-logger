@@ -2,7 +2,7 @@
   "name": "terminal-logger",
   "displayName": "Terminal Logger",
   "description": "自动记录终端输出到日志文件，支持时间戳和多终端分别记录",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "publisher": "jeromesun",
   "license": "MIT",
   "repository": {
@@ -36,6 +36,10 @@
       {
         "command": "terminalLogger.clearCurrentLog",
         "title": "Terminal Logger: 清空当前日志"
+      },
+      {
+        "command": "terminalLogger.newLoggingTerminal",
+        "title": "Terminal Logger: 新建日志终端（自建 PTY，兼容 Remote SSH）"
       }
     ],
     "configuration": {
@@ -102,7 +106,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "test": "tsc -p ./ && node dist/test/integration.test.js"
+    "test": "tsc -p ./ && node dist/test/integration.test.js && node dist/test/ptySession.test.js"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

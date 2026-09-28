@@ -1,5 +1,16 @@
 # Terminal Logger - VSCode 终端日志记录插件
 
+## [1.0.7] - 2026-09-28
+
+### Fixed
+- 修复 Remote SSH 等环境下日志只剩「会话开始 / 结束」的问题：`onDidWriteTerminalData` 是 proposed API，未授权时「注册」这一步就会抛错，原先只用 `typeof` 判断会误报可用；现在注册一并放进 try，失败时明确标记为不可用
+- 修复误报可用导致的静默失败：两条通道都拿不到数据时主动提示，并给出一键替代方案
+
+### Added
+- 新增命令 `Terminal Logger: 新建日志终端`：终端 PTY 由插件自建，不依赖 Shell Integration，也不依赖 proposed API
+- 自建 PTY 支持 Linux / macOS（python3 + `pty.openpty()` 桥接）与 Windows（pipe 直连），支持 bash / zsh / fish / PowerShell / cmd，遵循 `terminal.integrated.defaultProfile`
+- 自建 PTY 终端支持窗口尺寸同步，命令回显不再与命令本身重复入账
+
 ## [1.0.6] - 2026-09-24
 
 ### Fixed

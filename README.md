@@ -46,6 +46,7 @@ npx vsce package
 | `Terminal Logger: 开启/关闭日志记录` | 切换日志记录状态 |
 | `Terminal Logger: 打开日志文件夹` | 在系统文件管理器中打开日志目录 |
 | `Terminal Logger: 清空当前日志` | 清空指定日志文件 |
+| `Terminal Logger: 新建日志终端` | 新建由插件自建 PTY 的终端，用于 Remote SSH 等拿不到终端数据的环境 |
 
 ## 配置选项
 
@@ -83,6 +84,10 @@ Compilation complete.
 1. 通过 `execution.commandLine.value` 捕获命令文本
 2. 通过 `execution.read()` 流式读取命令输出
 3. 清除 ANSI 转义码后，带时间戳写入日志文件
+
+Shell Integration 拿不到输出时（例如部分 Remote SSH 环境 `read()` 恒为空），会用 `onDidWriteTerminalData` 补上原始终端数据。该 API 属于 proposed API，未授权时会直接抛错，扩展只把它当作可选增强。
+
+两条通道都不可用时，扩展会主动提示，此时可执行 `Terminal Logger: 新建日志终端`：该终端的 PTY 由插件自己创建（Linux / macOS 走 python3 + `pty.openpty()` 桥接，Windows 走 pipe 直连），输入与输出不经过 IDE 的捕获通道，因此在任何环境下都能完整记录，并自动沿用 `terminal.integrated.defaultProfile` 指定的 shell（bash / zsh / fish / PowerShell / cmd）。
 
 ## License
 
