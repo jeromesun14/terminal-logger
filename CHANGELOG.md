@@ -1,5 +1,10 @@
 # Terminal Logger - VSCode 终端日志记录插件
 
+## [1.0.8] - 2026-10-04
+
+### Fixed
+- 修复 MATLAB 命令窗口无法记录的问题。该终端没有 Shell Integration，命令和运行结果现在会从终端数据直接写入日志；提示符清行后的短输出不会带上 `>>` 残留。PowerShell、Java 以及带 Shell Integration 的终端仍按原来的方式记录
+
 ## [1.0.7] - 2026-09-28
 
 ### Fixed

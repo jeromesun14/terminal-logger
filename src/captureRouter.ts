@@ -8,6 +8,9 @@
  *
  * 已经由另一条通道写过的行按顺序对上后跳过，避免同一行落两次。没对上的行补进日志。
  * 提示符和逐字输入仍然不记录。
+ *
+ * MATLAB 命令窗口这类终端没有 Shell Integration，永远等不到命令开始事件。
+ * 这类终端在确认没有 Shell Integration 之后，直接把原始终端数据记下来。
  */
 import { PtyAssembler, classifyShellLine } from './ptyAssembler';
 import { LogWriter } from './logWriter';
@@ -24,13 +27,41 @@ export class CaptureRouter {
     private assemblers: Map<string, PtyAssembler> = new Map();
     private unmatched: Map<string, ChannelLines> = new Map();
     private earlyOutput: Map<string, string[]> = new Map();
+    private shellIntegrated: Set<string> = new Set();
+    private replPreferred: Set<string> = new Set();
+    private replActive: Set<string> = new Set();
+    private firstPtyAt: Map<string, number> = new Map();
 
-    constructor(private readonly fallbackGapMs: number = 500) {}
+    constructor(
+        private readonly fallbackGapMs: number = 500,
+        private readonly replWaitMs: number = 2000
+    ) {}
+
+    /**
+     * 终端已经有 Shell Integration。之后不要把它当成无集成的 REPL。
+     */
+    noteShellIntegration(terminalKey: string): void {
+        this.shellIntegrated.add(terminalKey);
+        this.replPreferred.delete(terminalKey);
+        this.replActive.delete(terminalKey);
+    }
+
+    /**
+     * 已知这个终端不会有 Shell Integration（例如名字是 MATLAB 的命令窗口）。
+     * 下一段输出直接落盘，不用再等命令开始事件。
+     */
+    preferRepl(terminalKey: string): void {
+        if (this.shellIntegrated.has(terminalKey)) {
+            return;
+        }
+        this.replPreferred.add(terminalKey);
+    }
 
     /**
      * @returns 命令开始前缓冲里尚未换行的输入。Shell Integration 没给出命令文本时可以用它补一行。
      */
     beginCommand(terminalKey: string): string {
+        this.noteShellIntegration(terminalKey);
         const echoed = this.assemblerFor(terminalKey).takePending().trim();
         this.commandActive.set(terminalKey, true);
         this.graceUntil.delete(terminalKey);
@@ -123,9 +154,16 @@ export class CaptureRouter {
      * @returns 这段原始终端数据是否已写入日志
      */
     terminalData(terminalKey: string, data: string, now: number, sink: (data: string) => void): boolean {
+        if (!this.shellIntegrated.has(terminalKey) && !this.firstPtyAt.has(terminalKey)) {
+            this.firstPtyAt.set(terminalKey, now);
+        }
         const assembled = this.assemblerFor(terminalKey).push(data, now);
         const phase = this.phase(terminalKey, now);
+        const repl = phase === 'idle' && this.isRepl(terminalKey, now);
         let wrote = false;
+        if (repl) {
+            wrote = this.flushEarlyAsRepl(terminalKey, sink) || wrote;
+        }
 
         for (const raw of assembled) {
             const classified = classifyShellLine(raw);
@@ -141,7 +179,7 @@ export class CaptureRouter {
                 continue;
             }
 
-            if (phase === 'idle') {
+            if (phase === 'idle' && !repl) {
                 this.stashEarly(terminalKey, accepted);
                 continue;
             }
@@ -164,6 +202,43 @@ export class CaptureRouter {
         this.assemblers.delete(terminalKey);
         this.unmatched.delete(terminalKey);
         this.earlyOutput.delete(terminalKey);
+        this.shellIntegrated.delete(terminalKey);
+        this.replPreferred.delete(terminalKey);
+        this.replActive.delete(terminalKey);
+        this.firstPtyAt.delete(terminalKey);
+    }
+
+    private isRepl(terminalKey: string, now: number): boolean {
+        if (this.shellIntegrated.has(terminalKey)) {
+            return false;
+        }
+        if (this.replActive.has(terminalKey)) {
+            return true;
+        }
+        if (this.replPreferred.has(terminalKey)) {
+            this.replActive.add(terminalKey);
+            return true;
+        }
+        const first = this.firstPtyAt.get(terminalKey);
+        if (first === undefined || now - first < this.replWaitMs) {
+            return false;
+        }
+        this.replActive.add(terminalKey);
+        return true;
+    }
+
+    private flushEarlyAsRepl(terminalKey: string, sink: (data: string) => void): boolean {
+        const pending = this.earlyOutput.get(terminalKey) ?? [];
+        this.earlyOutput.set(terminalKey, []);
+        let wrote = false;
+        for (const line of pending) {
+            if (CaptureRouter.isBareReplPrompt(line)) {
+                continue;
+            }
+            sink(line);
+            wrote = true;
+        }
+        return wrote;
     }
 
     private phase(terminalKey: string, now: number): 'command' | 'grace' | 'idle' {
@@ -265,6 +340,9 @@ export class CaptureRouter {
         if (!text) {
             return null;
         }
+        if (this.replActive.has(terminalKey) && CaptureRouter.isBareReplPrompt(text)) {
+            return null;
+        }
         if (this.isSameCommand(terminalKey, text)) {
             return null;
         }
@@ -282,6 +360,11 @@ export class CaptureRouter {
     /**
      * zsh 的退格重绘折叠后可能丢掉空格，和 Shell Integration 记下的命令其实是同一条。
      */
+    /** MATLAB 空闲提示符。后面跟了命令时要留下。 */
+    private static isBareReplPrompt(line: string): boolean {
+        return /^(?:(?:EDU|K)?>>|\?)$/.test(line.trim());
+    }
+
     private static sameCommand(line: string, command: string): boolean {
         if (line === command || line === `$ ${command}`) {
             return true;

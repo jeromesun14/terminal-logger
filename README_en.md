@@ -84,6 +84,8 @@ This extension uses VSCode's **Shell Integration API** (`onDidStartTerminalShell
 2. Streams the command output via `execution.read()`
 3. Strips ANSI escape codes and writes timestamped lines to the log file
 
+The MATLAB command window has no Shell Integration. Commands and output from that terminal are recorded directly from terminal data, instead of waiting for a command-start event that never arrives.
+
 ## License
 
 MIT

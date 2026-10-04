@@ -79,14 +79,23 @@ export class TerminalScreen {
             let params = '';
             while (i < input.length) {
                 const c = input[i];
+                const code = c.charCodeAt(0);
                 if ((c >= '0' && c <= '9') || c === ';' || c === '?') {
                     params += c;
                     i++;
                     continue;
                 }
-                i++;
-                this.applyCsi(params, c);
-                return i;
+                // 中间字节，例如 "\x1b[5 q" 里的空格。最终字节才是命令。
+                if (code >= 0x20 && code <= 0x2f) {
+                    i++;
+                    continue;
+                }
+                if (code >= 0x40 && code <= 0x7e) {
+                    i++;
+                    this.applyCsi(params, c);
+                    return i;
+                }
+                return i + 1;
             }
             return input.length;
         }
@@ -111,6 +120,27 @@ export class TerminalScreen {
         const value = first === '' ? NaN : parseInt(first, 10);
         const n = (fallback: number) => Number.isFinite(value) && value > 0 ? value : fallback;
 
+        if (final === 'J') {
+            // MATLAB 命令窗口在写输出前发送 CSI 0J，把当前提示符行清掉。
+            // 不清的话，短输出会留下 ">> " 的残留字符。
+            const mode = first === '' ? 0 : (Number.isFinite(value) ? value : 0);
+            if (mode === 2 || mode === 3) {
+                this.line = '';
+                this.col = 0;
+            } else if (mode === 1) {
+                this.line = ' '.repeat(Math.max(0, this.col)) + this.line.slice(this.col);
+            } else {
+                this.line = this.line.slice(0, this.col);
+            }
+            return;
+        }
+        if (final === 'H' || final === 'f') {
+            const parts = params.split(';');
+            const colRaw = parts.length > 1 ? parseInt(parts[1], 10) : 1;
+            const col = Number.isFinite(colRaw) && colRaw > 0 ? colRaw : 1;
+            this.col = col - 1;
+            return;
+        }
         if (final === 'K') {
             const mode = first === '' ? 0 : (Number.isFinite(value) ? value : 0);
             if (mode === 2) {
@@ -280,4 +310,12 @@ export function classifyShellLine(line: string): ClassifiedShellLine {
 
 export function normalizeShellLine(line: string): string | null {
     return classifyShellLine(line).text;
+}
+
+/**
+ * MATLAB 扩展创建的命令窗口名叫 MATLAB，是自定义 Pseudoterminal，没有 Shell Integration。
+ * 名字对上、且调用方确认还没有 Shell Integration 时，直接记录终端数据。
+ */
+export function prefersDirectCapture(terminalName: string): boolean {
+    return /matlab/i.test(terminalName);
 }

@@ -84,6 +84,8 @@ Compilation complete.
 2. 通过 `execution.read()` 流式读取命令输出
 3. 清除 ANSI 转义码后，带时间戳写入日志文件
 
+MATLAB 命令窗口没有 Shell Integration。这类终端的命令和输出会从终端数据直接记录，不会再等一个不会到来的命令开始事件。
+
 ## License
 
 MIT

@@ -5,7 +5,7 @@ import { ConfigManager } from './configManager';
 import { TerminalManager } from './terminalManager';
 import { StatusBarManager } from './statusBarManager';
 import { CaptureRouter } from './captureRouter';
-import { normalizeShellLine } from './ptyAssembler';
+import { normalizeShellLine, prefersDirectCapture } from './ptyAssembler';
 
 let terminalManager: TerminalManager;
 let statusBarManager: StatusBarManager;
@@ -40,6 +40,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.window.onDidChangeTerminalShellIntegration((event) => {
+            classifyTerminal(event.terminal);
             const terminal = event.terminal;
             const si = event.shellIntegration;
             outputChannel.appendLine(`[Shell Integration Changed] terminal="${terminal.name}", cwd=${si.cwd?.toString()}`);
@@ -48,6 +49,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.window.onDidOpenTerminal((terminal) => {
+            classifyTerminal(terminal);
             const si = terminal.shellIntegration;
             outputChannel.appendLine(`[Terminal Opened] name="${terminal.name}", shellIntegration=${si ? 'available' : 'not available'}`);
         })
@@ -132,6 +134,7 @@ export function activate(context: vscode.ExtensionContext) {
                         return;
                     }
                     const terminal = event.terminal;
+                    classifyTerminal(terminal);
                     const key = terminalKey(terminal);
                     captureRouter.terminalData(key, event.data, Date.now(), data => {
                         writeToTerminal(terminal, data);
@@ -223,6 +226,25 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(
             'Terminal Logger 已激活，自动记录所有终端命令执行日志。'
         );
+    }
+
+    for (const terminal of vscode.window.terminals) {
+        classifyTerminal(terminal);
+    }
+}
+
+/**
+ * 有 Shell Integration 的终端按命令记录。
+ * MATLAB 命令窗口没有 Shell Integration，名字对上后直接记录终端数据。
+ */
+function classifyTerminal(terminal: vscode.Terminal): void {
+    const key = terminalKey(terminal);
+    if (terminal.shellIntegration) {
+        captureRouter.noteShellIntegration(key);
+        return;
+    }
+    if (prefersDirectCapture(terminal.name)) {
+        captureRouter.preferRepl(key);
     }
 }
 
