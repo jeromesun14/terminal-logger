@@ -10,6 +10,7 @@
  * - 命令输入按整行记录，而不是一行一个字母（issue #7）
  * - Remote SSH 上 bash/zsh/Windows 的逐字回显在命令期间到达时仍按整行记录（issue #9）
  * - read() 缺行、或输出晚于命令结束时不丢输出；本地两条通道不重复（issue #12）
+ * - 没有 Shell Integration 的 MATLAB 命令窗口仍记录命令和输出（issue #14）
  */
 
 import * as fs from 'fs';
@@ -18,7 +19,7 @@ import * as os from 'os';
 import { spawnSync } from 'child_process';
 import { LogWriter } from '../logWriter';
 import { CaptureRouter } from '../captureRouter';
-import { normalizeShellLine } from '../ptyAssembler';
+import { normalizeShellLine, prefersDirectCapture } from '../ptyAssembler';
 import { allocateLogPath, formatFileName, loggingToggleTarget, pickWorkspaceRoot } from '../format';
 
 let testCount = 0;
@@ -660,6 +661,109 @@ async function runTests(): Promise<void> {
             assert(`真实 PTY ${mode}：无换行长块还在`, flat.includes('BULK_' + 'B'.repeat(20000)));
         }
     }
+
+    console.log('\n📋 测试组 11: MATLAB 命令窗口没有 Shell Integration (issue #14)');
+
+    assert('MATLAB 终端名字直接记录', prefersDirectCapture('MATLAB') && prefersDirectCapture('matlab'));
+    assert('PowerShell 和 Java 终端不按 MATLAB 处理', !prefersDirectCapture('PowerShell') && !prefersDirectCapture('Java'));
+
+    const matlabLog: string[] = [];
+    const matlab = new CaptureRouter(500);
+    matlab.preferRepl('matlab');
+    const matlabSink = (line: string) => matlabLog.push(line);
+    let matlabAt = 9_000_000;
+    const matlabWrite = (data: string) => {
+        matlab.terminalData('matlab', data, matlabAt, matlabSink);
+        matlabAt += 40;
+    };
+
+    matlabWrite('\x1b[5 q');
+    matlabWrite('>> ');
+    matlabWrite('\x1b[4G');
+    for (const ch of 'a = 1') {
+        matlabWrite(ch);
+    }
+    matlabWrite('\r\n');
+    matlabWrite('>> ');
+    matlabWrite('\x1b[4G');
+
+    const matlabOutputLine = (text: string) => {
+        matlabWrite('\x1b[0G\x1b[0J');
+        if (text) {
+            matlabWrite(text);
+        }
+        matlabWrite('\r\n');
+        matlabWrite('>> ');
+        matlabWrite('\x1b[4G');
+    };
+    matlabOutputLine('a =');
+    matlabOutputLine('');
+    matlabOutputLine('     1');
+    matlabOutputLine('');
+
+    for (const ch of 'disp(\'hi\')') {
+        matlabWrite(ch);
+    }
+    matlabWrite('\r\n');
+    matlabWrite('>> ');
+    matlabWrite('\x1b[4G');
+    matlabOutputLine('hi');
+
+    matlabWrite('\x1b[31m');
+    matlabOutputLine('error: oops');
+    matlabWrite('\x1b[0m');
+
+    matlabWrite('\x1b[2J\x1b[3J\x1b[1;1H');
+    matlabWrite('K>> ');
+    matlabWrite('\x1b[5G');
+    for (const ch of 'dbcont') {
+        matlabWrite(ch);
+    }
+    const beforeBackspace = matlabLog.length;
+    matlabWrite('\x1b[0G\x1b[0J');
+    matlabWrite('K>> dbco');
+    matlabWrite('\x1b[9G');
+    assert('MATLAB 退格重绘在回车前不落盘', matlabLog.length === beforeBackspace);
+    matlabWrite('\r\n');
+
+    const matlabJoined = matlabLog.join('\n');
+    assert('MATLAB 命令按整行记录', matlabLog.includes('>> a = 1') && matlabLog.includes('>> disp(\'hi\')'));
+    assert('MATLAB 运行结果写入日志', matlabJoined.includes('a =') && matlabJoined.includes('     1') && matlabJoined.includes('hi') && matlabJoined.includes('error: oops'));
+    assert('MATLAB 短输出不会带上提示符残留', matlabLog.includes('hi') && !matlabLog.some(line => line.includes('hi>')));
+    assert('MATLAB 空提示符不写入', !matlabLog.some(line => line.trim() === '>>' || line.trim() === 'K>>'));
+    assert('MATLAB 调试命令仍然记录', matlabLog.includes('K>> dbco'));
+    assert('MATLAB 逐字输入不会拆成单字母行', !matlabLog.some(line => line.trim() === 'a' || line.trim() === 'd' || line.includes('\x1b')));
+
+    const matlabPath = path.join(tmpDir, 'matlab.log');
+    const matlabWriter = new LogWriter({
+        logPath: matlabPath,
+        timestampFormat: '[YYYY-MM-DD HH:mm:ss]',
+        maxFileSizeBytes: 0
+    });
+    for (const line of matlabLog) {
+        matlabWriter.write(line);
+    }
+    const matlabFile = fs.readFileSync(matlabPath, 'utf-8');
+    matlabWriter.dispose();
+    assert('MATLAB 日志文件里有命令和结果', matlabFile.includes('>> a = 1') && matlabFile.includes('     1') && matlabFile.includes('error: oops'));
+
+    const waiting: string[] = [];
+    const waitRouter = new CaptureRouter(500, 1000);
+    waitRouter.terminalData('repl', 'banner ready\r\n', 10_000_000, line => waiting.push(line));
+    assert('还没确认没有 Shell Integration 时先不落盘', waiting.length === 0);
+    waitRouter.terminalData('repl', 'result 42\r\n', 10_001_000, line => waiting.push(line));
+    assert('等不到 Shell Integration 后，之前和当前的输出都落盘', waiting.includes('banner ready') && waiting.includes('result 42'));
+
+    const integrated: string[] = [];
+    const integratedRouter = new CaptureRouter(500, 1000);
+    integratedRouter.terminalData('bash', 'Welcome\r\n', 11_000_000, line => integrated.push(line));
+    integratedRouter.noteShellIntegration('bash');
+    integratedRouter.terminalData('bash', 'still idle\r\n', 11_005_000, line => integrated.push(line));
+    integratedRouter.beginCommand('bash');
+    integratedRouter.noteCommand('bash', 'date');
+    const integratedEarly = integratedRouter.takeEarlyOutput('bash');
+    assert('已有 Shell Integration 的终端不会改成直接落盘', integrated.length === 0);
+    assert('Shell Integration 迟到时，之前的输出仍补在命令后面', integratedEarly.includes('Welcome') && integratedEarly.includes('still idle'));
 
     try {
         fs.rmSync(tmpDir, { recursive: true, force: true });
